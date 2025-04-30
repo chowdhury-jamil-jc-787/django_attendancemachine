@@ -6,3 +6,4 @@ mysql-connector-python==9.3.0
 mysqlclient==2.2.7
 PyJWT==2.9.0
 sqlparse==0.5.3
+django-cors-headers==4.7.0
