@@ -71,7 +71,7 @@ REST_FRAMEWORK = {
         'myapp.authentication.CustomJWTAuthentication',
     ),
         'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',  # ✅ default to token required
+        'rest_framework.permissions.IsAuthenticated',  
     ),
 }
 
