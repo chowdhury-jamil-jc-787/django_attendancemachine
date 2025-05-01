@@ -100,7 +100,7 @@ WSGI_APPLICATION = 'attendancemachine.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'mysql.connector.django',  # ✅ back to mysql-connector
+        'ENGINE': 'mysql.connector.django',  
         'NAME': 'atpldhaka_djangoattendance',
         'USER': 'atpldhaka_djangoattend',
         'PASSWORD': 'atpldhaka_djangoattendance',
