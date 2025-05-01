@@ -23,6 +23,7 @@ jobs:
           server-dir: /home/atpldhaka/djangoattendance.atpldhaka.com/attendancemachine/
           local-dir: attendancemachine/
           exclude: |
+            env/**
             **/.git*
             **/.github*
             **/venv/**
