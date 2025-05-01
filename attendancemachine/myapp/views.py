@@ -31,6 +31,7 @@ class RegisterView(generics.GenericAPIView):
         user_serializer = UserSerializer(user)
 
         return Response({
+            'status': True,  # ✅ Custom status message
             'id': user.id,
             'refresh': str(refresh),
             'access': str(refresh.access_token),
@@ -38,24 +39,28 @@ class RegisterView(generics.GenericAPIView):
         }, status=status.HTTP_201_CREATED)
 
 class LoginView(generics.GenericAPIView):
-    permission_classes = [AllowAny]  # ✅ this makes it public
+    permission_classes = [AllowAny]
     serializer_class = LoginSerializer
 
     def post(self, request, *args, **kwargs):
-       username = request.data.get('username')
-       password = request.data.get('password')
-       user = authenticate(username=username, password=password)
+        username = request.data.get('username')
+        password = request.data.get('password')
+        user = authenticate(username=username, password=password)
 
-       if user is not None:
-           refresh = RefreshToken.for_user(user)
-           user_serializer = UserSerializer(user)
-           return Response({
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-            'user': user_serializer.data
-            })
-       else:
-            return Response({'error': 'Invalid credentials'}, status=401)
+        if user is not None:
+            refresh = RefreshToken.for_user(user)
+            user_serializer = UserSerializer(user)
+            return Response({
+                "status": True,  # ✅ Custom status message
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user": user_serializer.data
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                "status": "Login failed",
+                "error": "Invalid credentials"
+            }, status=status.HTTP_401_UNAUTHORIZED)
        
 class DashboardView(APIView):
     permission_classes = (IsAuthenticated,)
@@ -83,7 +88,7 @@ class DashboardView(APIView):
         user = request.user
         user_serializer = UserSerializer(user)
         return Response({
-            "message": "Welcome to the dashboard!",
+            "success": True,
             "user": user_serializer.data
         }, status=200)
     
