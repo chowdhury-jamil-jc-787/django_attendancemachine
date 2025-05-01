@@ -28,7 +28,6 @@ class DailyFirstPunchesView(APIView):
     def get(self, request):
         user_email = request.user.email  # Authenticated user's email
 
-        # Step 1: Get emp_code for the authenticated user
         with connections['logs'].cursor() as cursor:
             cursor.execute(
                 "SELECT emp_code, first_name FROM personnel_employee WHERE email = %s",
@@ -41,7 +40,6 @@ class DailyFirstPunchesView(APIView):
 
         emp_code, first_name = emp_data
 
-        # Step 2: Handle filters
         specific_date = request.query_params.get('date')
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
@@ -59,32 +57,26 @@ class DailyFirstPunchesView(APIView):
         """
         params = [emp_code]
 
-        if start_date and end_date:
-            try:
+        try:
+            if start_date and end_date:
                 end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
                 sql += " AND ic.punch_time >= %s AND ic.punch_time < %s"
                 params.append(start_date)
                 params.append(end_date_obj.strftime("%Y-%m-%d"))
-            except ValueError:
-                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
-        elif start_date:
-            try:
+            elif start_date:
                 today_plus_one = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
                 sql += " AND ic.punch_time >= %s AND ic.punch_time < %s"
                 params.append(start_date)
                 params.append(today_plus_one)
-            except ValueError:
-                return Response({"error": "Invalid start_date format. Use YYYY-MM-DD."}, status=400)
-        elif specific_date:
-            try:
+            elif specific_date:
                 sql += " AND DATE(ic.punch_time) = %s"
                 params.append(specific_date)
-            except ValueError:
-                return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
         sql += """
             GROUP BY ic.emp_code, pe.first_name, DATE(ic.punch_time)
-            ORDER BY DATE(ic.punch_time) ASC
+            ORDER BY DATE(ic.punch_time) DESC
         """
 
         # Step 3: Pagination
@@ -104,39 +96,27 @@ class DailyFirstPunchesView(APIView):
             cursor.execute(paginated_sql, paginated_params)
             rows = cursor.fetchall()
 
-        # Helpers
+        # Formatting functions
         def format_time(dt):
-            if isinstance(dt, datetime):
-                return dt.strftime('%H:%M:%S')
-            elif isinstance(dt, str) and len(dt) >= 19:
-                return dt[11:19]
-            return str(dt)
+            return dt.strftime('%H:%M:%S') if isinstance(dt, datetime) else str(dt)
 
         def calculate_duration(start, end):
             if isinstance(start, datetime) and isinstance(end, datetime):
-                diff = end - start
-                total_minutes = int(diff.total_seconds() // 60)
-                hours = total_minutes // 60
-                minutes = total_minutes % 60
-                return f"{hours:02}:{minutes:02}"
+                total_minutes = int((end - start).total_seconds() // 60)
+                return f"{total_minutes // 60:02}:{total_minutes % 60:02}"
             return "00:00"
 
         def check_arrival_status(first_punch):
             threshold = datetime.strptime('07:15:00', '%H:%M:%S').time()
-            if isinstance(first_punch, datetime):
-                return "In Time" if first_punch.time() < threshold else "Late"
-            return "Unknown"
+            return "In Time" if isinstance(first_punch, datetime) and first_punch.time() < threshold else "Late"
 
         def check_leave_status(last_punch):
             threshold = datetime.strptime('15:30:00', '%H:%M:%S').time()
-            if isinstance(last_punch, datetime):
-                return "On Time" if last_punch.time() >= threshold else "Early Leave"
-            return "Unknown"
+            return "On Time" if isinstance(last_punch, datetime) and last_punch.time() >= threshold else "Early Leave"
 
         results = []
         for row in rows:
             emp_code, first_name, punch_date, first_punch_dt, last_punch_dt = row
-
             arrival_status = check_arrival_status(first_punch_dt)
             leave_status = check_leave_status(last_punch_dt)
             combined_status = f"{arrival_status} + {leave_status}"
@@ -151,22 +131,29 @@ class DailyFirstPunchesView(APIView):
                 "status": combined_status
             })
 
-        # Pagination links
+        # Pagination URL helpers
+        last_page = (total_count + per_page - 1) // per_page
+        base_url = request.build_absolute_uri(request.path)
         base_params = request.query_params.dict()
         base_params['per_page'] = per_page
 
         def build_url(page_number):
             base_params['page'] = page_number
-            return f"?{urlencode(base_params)}"
+            return f"{base_url}?{urlencode(base_params)}"
 
-        response = {
-            "count": total_count,
-            "next": build_url(page + 1) if offset + per_page < total_count else None,
-            "previous": build_url(page - 1) if page > 1 else None,
-            "results": results,
+        pagination = {
+            "total": total_count,
+            "per_page": per_page,
+            "current_page": page,
+            "last_page": last_page,
+            "next_page_url": build_url(page + 1) if page < last_page else None,
+            "prev_page_url": build_url(page - 1) if page > 1 else None
         }
 
-        return Response(response)
+        return Response({
+            "pagination": pagination,
+            "results": results
+        })
     
 
 class AttendanceSummaryReport(APIView):
