@@ -26,19 +26,22 @@ class DailyFirstPunchesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_email = request.user.email  # Authenticated user's email
+        user_email = request.user.email
+        is_admin_user = user_email.lower() == "frahman@ampec.com.au"
+        params = []
 
-        with connections['logs'].cursor() as cursor:
-            cursor.execute(
-                "SELECT emp_code, first_name FROM personnel_employee WHERE email = %s",
-                [user_email]
-            )
-            emp_data = cursor.fetchone()
+        if not is_admin_user:
+            with connections['logs'].cursor() as cursor:
+                cursor.execute(
+                    "SELECT emp_code, first_name FROM personnel_employee WHERE email = %s",
+                    [user_email]
+                )
+                emp_data = cursor.fetchone()
 
-        if not emp_data:
-            return Response({"error": "Employee not found for this user."}, status=404)
+            if not emp_data:
+                return Response({"error": "Employee not found for this user."}, status=404)
 
-        emp_code, first_name = emp_data
+            emp_code, first_name = emp_data
 
         specific_date = request.query_params.get('date')
         start_date = request.query_params.get('start_date')
@@ -53,9 +56,12 @@ class DailyFirstPunchesView(APIView):
                    MAX(ic.punch_time) as last_punch_time
             FROM iclock_transaction ic
             JOIN personnel_employee pe ON ic.emp_code = pe.emp_code
-            WHERE ic.emp_code = %s
+            WHERE 1=1
         """
-        params = [emp_code]
+
+        if not is_admin_user:
+            sql += " AND ic.emp_code = %s"
+            params.append(emp_code)
 
         try:
             if start_date and end_date:
@@ -79,7 +85,6 @@ class DailyFirstPunchesView(APIView):
             ORDER BY DATE(ic.punch_time) DESC
         """
 
-        # Step 3: Pagination
         count_sql = f"SELECT COUNT(*) FROM ({sql}) AS subquery"
         with connections['logs'].cursor() as cursor:
             cursor.execute(count_sql, params)
@@ -96,7 +101,7 @@ class DailyFirstPunchesView(APIView):
             cursor.execute(paginated_sql, paginated_params)
             rows = cursor.fetchall()
 
-        # Formatting functions
+        # Formatting helpers
         def format_time(dt):
             return dt.strftime('%H:%M:%S') if isinstance(dt, datetime) else str(dt)
 
@@ -131,7 +136,7 @@ class DailyFirstPunchesView(APIView):
                 "status": combined_status
             })
 
-        # Pagination URL helpers
+        # Pagination metadata
         last_page = (total_count + per_page - 1) // per_page
         base_url = request.build_absolute_uri(request.path)
         base_params = request.query_params.dict()
@@ -154,7 +159,6 @@ class DailyFirstPunchesView(APIView):
             "pagination": pagination,
             "results": results
         })
-    
 
 class AttendanceSummaryReport(APIView):
     permission_classes = [IsAuthenticated]
