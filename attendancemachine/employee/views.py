@@ -30,7 +30,6 @@ class DailyFirstPunchesView(APIView):
         is_admin_user = user_email.lower() == "frahman@ampec.com.au"
         params = []
 
-        # Determine emp_code based on user type and query parameter
         requested_emp_code = request.query_params.get('emp_code')
         emp_code = None
         first_name = None
@@ -55,7 +54,7 @@ class DailyFirstPunchesView(APIView):
         page = int(request.query_params.get('page', 1))
 
         sql = """
-            SELECT ic.emp_code, pe.first_name,
+            SELECT ic.emp_code, pe.first_name, pe.last_name,
                    DATE(ic.punch_time) as punch_date,
                    MIN(ic.punch_time) as first_punch_time,
                    MAX(ic.punch_time) as last_punch_time
@@ -86,7 +85,7 @@ class DailyFirstPunchesView(APIView):
             return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
         sql += """
-            GROUP BY ic.emp_code, pe.first_name, DATE(ic.punch_time)
+            GROUP BY ic.emp_code, pe.first_name, pe.last_name, DATE(ic.punch_time)
             ORDER BY DATE(ic.punch_time) DESC
         """
 
@@ -106,7 +105,6 @@ class DailyFirstPunchesView(APIView):
             cursor.execute(paginated_sql, paginated_params)
             rows = cursor.fetchall()
 
-        # Formatting helpers
         def format_time(dt):
             return dt.strftime('%H:%M:%S') if isinstance(dt, datetime) else str(dt)
 
@@ -126,7 +124,7 @@ class DailyFirstPunchesView(APIView):
 
         results = []
         for row in rows:
-            emp_code, first_name, punch_date, first_punch_dt, last_punch_dt = row
+            emp_code, first_name, last_name, punch_date, first_punch_dt, last_punch_dt = row
             arrival_status = check_arrival_status(first_punch_dt)
             leave_status = check_leave_status(last_punch_dt)
             combined_status = f"{arrival_status} + {leave_status}"
@@ -134,6 +132,7 @@ class DailyFirstPunchesView(APIView):
             results.append({
                 "emp_code": emp_code,
                 "first_name": first_name,
+                "last_name": last_name,
                 "date": str(punch_date),
                 "first_punch_time": format_time(first_punch_dt),
                 "last_punch_time": format_time(last_punch_dt),
@@ -141,7 +140,6 @@ class DailyFirstPunchesView(APIView):
                 "status": combined_status
             })
 
-        # Pagination metadata
         last_page = (total_count + per_page - 1) // per_page
         base_url = request.build_absolute_uri(request.path)
         base_params = request.query_params.dict()
