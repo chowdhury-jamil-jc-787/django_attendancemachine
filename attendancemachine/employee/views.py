@@ -242,9 +242,9 @@ class AttendanceSummaryReport(APIView):
                 "employee_name": f"{first_name} {last_name}",
                 "total_working_hours": format_duration(total_minutes),
                 "total_working_days": total_days,
-                "avg_total_working": format_duration(total_minutes / total_days if total_days else 0),
-                "avg_first_punch_time": format_avg_time(sum_first_punch_seconds),
-                "avg_last_punch_time": format_avg_time(sum_last_punch_seconds),
+                "avg_hours_per_day": format_duration(total_minutes / total_days if total_days else 0),
+                "avg_sign_in": format_avg_time(sum_first_punch_seconds),
+                "avg_sign_out": format_avg_time(sum_last_punch_seconds),
                 "total_vacation": vacation_count
             }
             results.append(result)
