@@ -30,6 +30,11 @@ class DailyFirstPunchesView(APIView):
         is_admin_user = user_email.lower() == "frahman@ampec.com.au"
         params = []
 
+        # Determine emp_code based on user type and query parameter
+        requested_emp_code = request.query_params.get('emp_code')
+        emp_code = None
+        first_name = None
+
         if not is_admin_user:
             with connections['logs'].cursor() as cursor:
                 cursor.execute(
@@ -37,11 +42,11 @@ class DailyFirstPunchesView(APIView):
                     [user_email]
                 )
                 emp_data = cursor.fetchone()
-
-            if not emp_data:
-                return Response({"error": "Employee not found for this user."}, status=404)
-
-            emp_code, first_name = emp_data
+                if not emp_data:
+                    return Response({"error": "Employee not found for this user."}, status=404)
+                emp_code, first_name = emp_data
+        elif requested_emp_code:
+            emp_code = requested_emp_code
 
         specific_date = request.query_params.get('date')
         start_date = request.query_params.get('start_date')
@@ -59,7 +64,7 @@ class DailyFirstPunchesView(APIView):
             WHERE 1=1
         """
 
-        if not is_admin_user:
+        if emp_code:
             sql += " AND ic.emp_code = %s"
             params.append(emp_code)
 
