@@ -8,8 +8,8 @@ class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        profile = request.user.profile  # Thanks to OneToOneField with related_name='profile'
-        serializer = ProfileSerializer(profile, data=request.data, partial=True)
+        profile = request.user.profile
+        serializer = ProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response({"message": "Profile updated successfully", "profile": serializer.data})
