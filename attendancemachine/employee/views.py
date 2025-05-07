@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from corsheaders.defaults import default_headers
+from collections import defaultdict
 
 
 class EmployeeInfoView(APIView):
@@ -181,8 +182,12 @@ class AttendanceSummaryReport(APIView):
         working_days = [d for d in all_dates if d.weekday() not in (5, 6)]  # Exclude Sat (5) and Sun (6)
 
         with connections['logs'].cursor() as cursor:
-            # Get all employees
-            cursor.execute("SELECT emp_code, first_name, last_name FROM personnel_employee")
+            # Get all employees with valid names
+            cursor.execute("""
+                SELECT emp_code, first_name, last_name 
+                FROM personnel_employee 
+                WHERE first_name IS NOT NULL AND last_name IS NOT NULL
+            """)
             employees = cursor.fetchall()
 
             # Get punch data within range
@@ -195,7 +200,6 @@ class AttendanceSummaryReport(APIView):
             punch_data = cursor.fetchall()
 
         # Organize punch data for lookup
-        from collections import defaultdict
         punch_map = defaultdict(dict)
         for emp_code, punch_date, first_punch, last_punch in punch_data:
             punch_map[emp_code][punch_date] = (first_punch, last_punch)
@@ -228,7 +232,8 @@ class AttendanceSummaryReport(APIView):
                 return f"{h:02}:{m:02}"
 
             def format_avg_time(seconds):
-                if total_days == 0: return "00:00:00"
+                if total_days == 0:
+                    return "00:00:00"
                 avg = int(seconds / total_days)
                 h = avg // 3600
                 m = (avg % 3600) // 60
