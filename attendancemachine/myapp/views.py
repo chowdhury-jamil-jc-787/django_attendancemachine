@@ -7,7 +7,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToke
 from rest_framework.permissions import AllowAny
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
-from .serializers import RegisterSerializer, LoginSerializer, UserSerializer
+from .serializers import RegisterSerializer, LoginSerializer, UserSerializer, ChangePasswordSerializer
 from rest_framework import status, permissions
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from .models import BlacklistedAccessToken
@@ -129,3 +129,23 @@ class LogoutView(APIView):
                 return Response({"error": str(e)}, status=400)
 
         return Response({"error": "Unsupported token type"}, status=400)
+    
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        old_password = serializer.validated_data['old_password']
+        new_password = serializer.validated_data['new_password']
+
+        if not user.check_password(old_password):
+            return Response({"error": "Old password is incorrect."}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"message": "Password updated successfully."}, status=200)
