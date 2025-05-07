@@ -214,15 +214,29 @@ class AttendanceSummaryReport(APIView):
             sum_last_punch_seconds = 0
             vacation_count = 0
 
+            less_8_30 = 0
+            between_8_30_and_9_00 = 0
+            greater_9_00 = 0
+
             for d in working_days:
                 punch = punch_map[emp_code].get(d)
                 if punch:
                     first_punch, last_punch = punch
                     duration = last_punch - first_punch
-                    total_minutes += duration.total_seconds() / 60
+                    duration_minutes = duration.total_seconds() / 60
+                    duration_hours = duration.total_seconds() / 3600
+
+                    total_minutes += duration_minutes
                     total_days += 1
                     sum_first_punch_seconds += first_punch.hour * 3600 + first_punch.minute * 60 + first_punch.second
                     sum_last_punch_seconds += last_punch.hour * 3600 + last_punch.minute * 60 + last_punch.second
+
+                    if duration_hours < 8.5:
+                        less_8_30 += 1
+                    elif 8.5 <= duration_hours <= 9:
+                        between_8_30_and_9_00 += 1
+                    else:
+                        greater_9_00 += 1
                 else:
                     vacation_count += 1
 
@@ -248,7 +262,10 @@ class AttendanceSummaryReport(APIView):
                 "avg_hours_per_day": format_duration(total_minutes / total_days if total_days else 0),
                 "avg_sign_in": format_avg_time(sum_first_punch_seconds),
                 "avg_sign_out": format_avg_time(sum_last_punch_seconds),
-                "total_vacation": vacation_count
+                "total_vacation": vacation_count,
+                "less_8_30": less_8_30,
+                "between_8_30_and_9_00": between_8_30_and_9_00,
+                "greater_9_00": greater_9_00
             }
             results.append(result)
             serial_no += 1
