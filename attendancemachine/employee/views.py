@@ -60,7 +60,7 @@ class DailyFirstPunchesView(APIView):
                    MAX(ic.punch_time) as last_punch_time
             FROM iclock_transaction ic
             JOIN personnel_employee pe ON ic.emp_code = pe.emp_code
-            WHERE 1=1
+            WHERE pe.first_name IS NOT NULL AND pe.last_name IS NOT NULL
         """
 
         if emp_code:
