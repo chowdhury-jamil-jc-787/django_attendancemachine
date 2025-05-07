@@ -51,7 +51,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'employee',
     'corsheaders',
-    'profiles',
+    'profiles.apps.ProfilesConfig',  # ✅ keep this
     'mysql.connector.django',
 ]
 
