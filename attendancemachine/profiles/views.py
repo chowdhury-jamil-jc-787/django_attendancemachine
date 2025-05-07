@@ -7,7 +7,7 @@ from .serializers import ProfileSerializer
 class UpdateProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def put(self, request):
+    def post(self, request):
         profile = request.user.profile  # Thanks to OneToOneField with related_name='profile'
         serializer = ProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
