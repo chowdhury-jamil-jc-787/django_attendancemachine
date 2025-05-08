@@ -119,15 +119,18 @@ class DailyFirstPunchesView(APIView):
             threshold = datetime.strptime('07:15:00', '%H:%M:%S').time()
             return "In Time" if isinstance(first_punch, datetime) and first_punch.time() < threshold else "Late"
 
-        def check_leave_status(last_punch):
-            threshold = datetime.strptime('15:30:00', '%H:%M:%S').time()
-            return "On Time" if isinstance(last_punch, datetime) and last_punch.time() >= threshold else "Early Leave"
+        def check_leave_status(first_punch, last_punch):
+            if isinstance(first_punch, datetime) and isinstance(last_punch, datetime):
+                duration = last_punch - first_punch
+                if duration >= timedelta(hours=8, minutes=30):
+                    return "On Time"
+            return "Early Leave"
 
         results = []
         for row in rows:
             emp_code, first_name, last_name, punch_date, first_punch_dt, last_punch_dt = row
             arrival_status = check_arrival_status(first_punch_dt)
-            leave_status = check_leave_status(last_punch_dt)
+            leave_status = check_leave_status(first_punch_dt, last_punch_dt)
             combined_status = f"{arrival_status} + {leave_status}"
 
             results.append({
