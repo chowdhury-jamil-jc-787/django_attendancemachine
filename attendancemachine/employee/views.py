@@ -128,7 +128,7 @@ class DailyFirstPunchesView(APIView):
         def check_leave_status(first_punch, last_punch):
             if isinstance(first_punch, datetime) and isinstance(last_punch, datetime):
                 duration = last_punch - first_punch
-                required_duration = timedelta(hours=9)
+                required_duration = timedelta(hours=8, minutes=30)
                 if duration < required_duration:
                     minutes_short = int((required_duration - duration).total_seconds() // 60)
                     return f"Early Leave ({minutes_short} mins)"
