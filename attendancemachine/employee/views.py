@@ -116,22 +116,38 @@ class DailyFirstPunchesView(APIView):
             return "00:00"
 
         def check_arrival_status(first_punch):
-            threshold = datetime.strptime('07:15:00', '%H:%M:%S').time()
-            return "In Time" if isinstance(first_punch, datetime) and first_punch.time() < threshold else "Late"
+            if isinstance(first_punch, datetime):
+                threshold_time = datetime.strptime('07:15:59', '%H:%M:%S').time()
+                if first_punch.time() > threshold_time:
+                    base_time = datetime.combine(first_punch.date(), datetime.strptime('07:00:00', '%H:%M:%S').time())
+                    delta = first_punch - base_time
+                    minutes_late = int(delta.total_seconds() // 60)
+                    return f"Late ({minutes_late} mins)"
+            return ""
 
         def check_leave_status(first_punch, last_punch):
             if isinstance(first_punch, datetime) and isinstance(last_punch, datetime):
                 duration = last_punch - first_punch
-                if duration >= timedelta(hours=8, minutes=30):
-                    return "On Time"
-            return "Early Leave"
+                required_duration = timedelta(hours=9)
+                if duration < required_duration:
+                    minutes_short = int((required_duration - duration).total_seconds() // 60)
+                    return f"Early Leave ({minutes_short} mins)"
+            return ""
 
         results = []
         for row in rows:
             emp_code, first_name, last_name, punch_date, first_punch_dt, last_punch_dt = row
             arrival_status = check_arrival_status(first_punch_dt)
             leave_status = check_leave_status(first_punch_dt, last_punch_dt)
-            combined_status = f"{arrival_status} + {leave_status}"
+
+            if arrival_status and leave_status:
+                combined_status = f"{arrival_status} + {leave_status}"
+            elif arrival_status:
+                combined_status = arrival_status
+            elif leave_status:
+                combined_status = leave_status
+            else:
+                combined_status = ""
 
             results.append({
                 "emp_code": emp_code,
