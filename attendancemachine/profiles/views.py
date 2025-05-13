@@ -14,3 +14,14 @@ class UpdateProfileView(APIView):
             serializer.save()
             return Response({"message": "Profile updated successfully", "profile": serializer.data})
         return Response(serializer.errors, status=400)
+    
+class RetrieveProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            profile = request.user.profile  # via OneToOneField
+            serializer = ProfileSerializer(profile)
+            return Response(serializer.data, status=200)
+        except Profile.DoesNotExist:
+            return Response({"error": "Profile not found"}, status=404)
