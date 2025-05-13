@@ -15,6 +15,7 @@ from datetime import datetime
 from rest_framework_simplejwt.tokens import AccessToken
 import jwt
 from rest_framework.permissions import AllowAny
+from profiles.serializers import ProfileSerializer
 
 # Create your views here.
 class RegisterView(generics.GenericAPIView):
@@ -50,12 +51,22 @@ class LoginView(generics.GenericAPIView):
         if user is not None:
             refresh = RefreshToken.for_user(user)
             user_serializer = UserSerializer(user)
+
+            try:
+                profile = user.profile
+                profile_serializer = ProfileSerializer(profile)
+                profile_data = profile_serializer.data
+            except Exception:
+                profile_data = None
+
             return Response({
-                "status": True,  # ✅ Custom status message
+                "status": True,
                 "refresh": str(refresh),
                 "access": str(refresh.access_token),
-                "user": user_serializer.data
+                "user": user_serializer.data,
+                "profile": profile_data
             }, status=status.HTTP_200_OK)
+
         else:
             return Response({
                 "status": "Login failed",
@@ -80,16 +91,24 @@ class DashboardView(APIView):
         except Exception:
             return Response({"error": "Invalid token format"}, status=401)
 
-        # Step 3: Check if JTI exists in blacklist
+        # Step 3: Check if token is blacklisted
         if token_jti and BlacklistedAccessToken.objects.filter(jti=token_jti).exists():
             return Response({"error": "Your token has been blacklisted."}, status=401)
 
-        # Step 4: Proceed if token is valid
+        # Step 4: Proceed with authenticated user
         user = request.user
         user_serializer = UserSerializer(user)
+
+        try:
+            profile = user.profile
+            profile_serializer = ProfileSerializer(profile)
+        except Exception:
+            profile_serializer = None
+
         return Response({
             "success": True,
-            "user": user_serializer.data
+            "user": user_serializer.data,
+            "profile": profile_serializer.data if profile_serializer else None
         }, status=200)
     
 class LogoutView(APIView):
