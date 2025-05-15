@@ -103,6 +103,7 @@ class DailyFirstPunchesView(APIView):
             cursor.execute(count_sql, params)
             total_count = cursor.fetchone()[0]
 
+        # Pagination
         offset = (page - 1) * per_page
         paginated_sql = f"""
             SELECT * FROM ({sql}) AS subquery
@@ -143,19 +144,21 @@ class DailyFirstPunchesView(APIView):
 
         def check_leave_status(first_punch, last_punch):
             if isinstance(first_punch, datetime) and isinstance(last_punch, datetime):
-                duration = last_punch - first_punch
-                required_duration = timedelta(hours=8, minutes=30)
-                if duration < required_duration:
-                    minutes_short = int((required_duration - duration).total_seconds() // 60)
+                actual_duration = last_punch - first_punch
+                threshold = timedelta(hours=8, minutes=30)
+                full_required = timedelta(hours=9)
+
+                if actual_duration < threshold:
+                    minutes_short = int((full_required - actual_duration).total_seconds() // 60)
                     return f"Early Leave ({minutes_short} mins)"
             return ""
 
+        # Build response
         results = []
         for row in rows:
             emp_code_row, punch_date, first_punch_dt, last_punch_dt = row
             arrival_status = check_arrival_status(first_punch_dt)
             leave_status = check_leave_status(first_punch_dt, last_punch_dt)
-
             combined_status = " + ".join(filter(None, [arrival_status, leave_status]))
             first_name, last_name = user_map.get(emp_code_row, ("", ""))
 
@@ -170,6 +173,7 @@ class DailyFirstPunchesView(APIView):
                 "status": combined_status
             })
 
+        # Pagination metadata
         last_page = (total_count + per_page - 1) // per_page
         base_url = request.build_absolute_uri(request.path)
         base_params = request.query_params.dict()
