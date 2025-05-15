@@ -19,24 +19,37 @@ from profiles.serializers import ProfileSerializer
 
 # Create your views here.
 class RegisterView(generics.GenericAPIView):
-    permission_classes = [AllowAny]  # ✅ this makes it public
-    serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+    serializer_class = RegisterSerializer
 
     def post(self, request, *args, **kwargs):
+        # Step 1: Validate registration input
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
 
+        # Step 2: Create the user and save emp_code into Profile
+        user = serializer.save()  # emp_code is handled in serializer.create()
+
+        # Step 3: Generate tokens
         refresh = RefreshToken.for_user(user)
-        user_serializer = UserSerializer(user)
+        access_token = str(refresh.access_token)
 
+        # Step 4: Serialize user and profile
+        user_serializer = UserSerializer(user)
+        try:
+            profile_serializer = ProfileSerializer(user.profile)
+            profile_data = profile_serializer.data
+        except Exception:
+            profile_data = None
+
+        # Step 5: Return the response
         return Response({
-            'status': True,  # ✅ Custom status message
+            'status': True,
             'id': user.id,
             'refresh': str(refresh),
-            'access': str(refresh.access_token),
-            'user': user_serializer.data
+            'access': access_token,
+            'user': user_serializer.data,
+            'profile': profile_data
         }, status=status.HTTP_201_CREATED)
 
 class LoginView(generics.GenericAPIView):
