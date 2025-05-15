@@ -7,46 +7,53 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from corsheaders.defaults import default_headers
 from collections import defaultdict
-
+from django.contrib.auth.models import User
 
 class EmployeeInfoView(APIView):
     permission_classes = [IsAuthenticated]
-    def get(self, request):
-        with connections['logs'].cursor() as cursor:
-            cursor.execute("SELECT emp_code, first_name, last_name, email FROM personnel_employee")
-            rows = cursor.fetchall()
 
-        data = [
-            {"emp_code": row[0], "first_name": row[1], "last_name": row[2], "email": row[3]}
-            for row in rows
-        ]
+    def get(self, request):
+        users = User.objects.select_related('profile').all()
+        width = request.GET.get('w', 150)
+        height = request.GET.get('h', 150)
+
+        data = []
+        for user in users:
+            profile = user.profile
+            emp_code = getattr(profile, 'emp_code', None)
+
+            # Generate resized image URL if profile image exists
+            if profile.profile_img:
+                original_path = profile.profile_img.url  # e.g., /media/profile_images/imran.jpg
+                resized_url = f"/api/profiles/resize/?path={original_path}&w={width}&h={height}"
+            else:
+                resized_url = None
+
+            data.append({
+                'emp_code': emp_code,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'email': user.email,
+                'profile_img': resized_url
+            })
+
         return Response({"success": True, "data": data}, status=200)
-    
+
 
 class DailyFirstPunchesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_email = request.user.email
-        is_admin_user = user_email.lower() == "frahman@ampec.com.au"
-        params = []
+        user = request.user
+        emp_code = request.query_params.get('emp_code')
+        user_email = user.email.lower()
+        is_admin_user = user_email == "frahman@ampec.com.au"
 
-        requested_emp_code = request.query_params.get('emp_code')
-        emp_code = None
-        first_name = None
-
+        # For regular user, get emp_code from profile
         if not is_admin_user:
-            with connections['logs'].cursor() as cursor:
-                cursor.execute(
-                    "SELECT emp_code, first_name FROM personnel_employee WHERE email = %s",
-                    [user_email]
-                )
-                emp_data = cursor.fetchone()
-                if not emp_data:
-                    return Response({"error": "Employee not found for this user."}, status=404)
-                emp_code, first_name = emp_data
-        elif requested_emp_code:
-            emp_code = requested_emp_code
+            emp_code = getattr(user.profile, 'emp_code', None)
+            if not emp_code:
+                return Response({"error": "Employee code not found for this user."}, status=404)
 
         specific_date = request.query_params.get('date')
         start_date = request.query_params.get('start_date')
@@ -54,42 +61,43 @@ class DailyFirstPunchesView(APIView):
         per_page = int(request.query_params.get('per_page', 10))
         page = int(request.query_params.get('page', 1))
 
+        params = []
         sql = """
-            SELECT ic.emp_code, pe.first_name, pe.last_name,
-                   DATE(ic.punch_time) as punch_date,
-                   MIN(ic.punch_time) as first_punch_time,
-                   MAX(ic.punch_time) as last_punch_time
-            FROM iclock_transaction ic
-            JOIN personnel_employee pe ON ic.emp_code = pe.emp_code
-            WHERE pe.first_name IS NOT NULL AND pe.last_name IS NOT NULL
+            SELECT user_id,
+                   DATE(timestamp) as punch_date,
+                   MIN(timestamp) as first_punch_time,
+                   MAX(timestamp) as last_punch_time
+            FROM attendance_logs
+            WHERE 1=1
         """
 
         if emp_code:
-            sql += " AND ic.emp_code = %s"
+            sql += " AND user_id = %s"
             params.append(emp_code)
 
         try:
             if start_date and end_date:
                 end_date_obj = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
-                sql += " AND ic.punch_time >= %s AND ic.punch_time < %s"
+                sql += " AND timestamp >= %s AND timestamp < %s"
                 params.append(start_date)
                 params.append(end_date_obj.strftime("%Y-%m-%d"))
             elif start_date:
                 today_plus_one = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-                sql += " AND ic.punch_time >= %s AND ic.punch_time < %s"
+                sql += " AND timestamp >= %s AND timestamp < %s"
                 params.append(start_date)
                 params.append(today_plus_one)
             elif specific_date:
-                sql += " AND DATE(ic.punch_time) = %s"
+                sql += " AND DATE(timestamp) = %s"
                 params.append(specific_date)
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
         sql += """
-            GROUP BY ic.emp_code, pe.first_name, pe.last_name, DATE(ic.punch_time)
-            ORDER BY DATE(ic.punch_time) DESC
+            GROUP BY user_id, DATE(timestamp)
+            ORDER BY DATE(timestamp) DESC
         """
 
+        # Count total results
         count_sql = f"SELECT COUNT(*) FROM ({sql}) AS subquery"
         with connections['logs'].cursor() as cursor:
             cursor.execute(count_sql, params)
@@ -106,6 +114,14 @@ class DailyFirstPunchesView(APIView):
             cursor.execute(paginated_sql, paginated_params)
             rows = cursor.fetchall()
 
+        # Build emp_code → (first_name, last_name) map
+        user_map = {}
+        for u in User.objects.select_related('profile').all():
+            emp_code_key = getattr(u.profile, 'emp_code', None)
+            if emp_code_key:
+                user_map[emp_code_key] = (u.first_name, u.last_name)
+
+        # Utilities
         def format_time(dt):
             return dt.strftime('%H:%M:%S') if isinstance(dt, datetime) else str(dt)
 
@@ -136,21 +152,15 @@ class DailyFirstPunchesView(APIView):
 
         results = []
         for row in rows:
-            emp_code, first_name, last_name, punch_date, first_punch_dt, last_punch_dt = row
+            emp_code_row, punch_date, first_punch_dt, last_punch_dt = row
             arrival_status = check_arrival_status(first_punch_dt)
             leave_status = check_leave_status(first_punch_dt, last_punch_dt)
 
-            if arrival_status and leave_status:
-                combined_status = f"{arrival_status} + {leave_status}"
-            elif arrival_status:
-                combined_status = arrival_status
-            elif leave_status:
-                combined_status = leave_status
-            else:
-                combined_status = ""
+            combined_status = " + ".join(filter(None, [arrival_status, leave_status]))
+            first_name, last_name = user_map.get(emp_code_row, ("", ""))
 
             results.append({
-                "emp_code": emp_code,
+                "emp_code": emp_code_row,
                 "first_name": first_name,
                 "last_name": last_name,
                 "date": str(punch_date),
@@ -196,37 +206,40 @@ class AttendanceSummaryReport(APIView):
         if end_date < start_date:
             return Response({"error": "end_date cannot be before start_date."}, status=400)
 
-        # Generate all dates in the range
+        # Step 1: Generate working dates (Mon–Fri)
         all_dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
         working_days = [d for d in all_dates if d.weekday() not in (5, 6)]  # Exclude Sat (5) and Sun (6)
 
-        with connections['logs'].cursor() as cursor:
-            # Get all employees with valid names
-            cursor.execute("""
-                SELECT emp_code, first_name, last_name 
-                FROM personnel_employee 
-                WHERE first_name IS NOT NULL AND last_name IS NOT NULL
-            """)
-            employees = cursor.fetchall()
+        # Step 2: Fetch all users with valid emp_code
+        users = User.objects.select_related('profile').all()
+        employee_map = {
+            u.profile.emp_code: {
+                'name': f"{u.first_name} {u.last_name}"
+            }
+            for u in users
+            if hasattr(u, 'profile') and u.profile.emp_code
+        }
 
-            # Get punch data within range
+        # Step 3: Fetch punch data from attendance_logs in logs DB
+        with connections['logs'].cursor() as cursor:
             cursor.execute("""
-                SELECT emp_code, DATE(punch_time), MIN(punch_time), MAX(punch_time)
-                FROM iclock_transaction
-                WHERE DATE(punch_time) BETWEEN %s AND %s
-                GROUP BY emp_code, DATE(punch_time)
+                SELECT user_id, DATE(timestamp), MIN(timestamp), MAX(timestamp)
+                FROM attendance_logs
+                WHERE DATE(timestamp) BETWEEN %s AND %s
+                GROUP BY user_id, DATE(timestamp)
             """, [start_date, end_date])
             punch_data = cursor.fetchall()
 
-        # Organize punch data for lookup
+        # Step 4: Organize punch data by user_id and date
         punch_map = defaultdict(dict)
-        for emp_code, punch_date, first_punch, last_punch in punch_data:
-            punch_map[emp_code][punch_date] = (first_punch, last_punch)
+        for user_id, punch_date, first_punch, last_punch in punch_data:
+            punch_map[user_id][punch_date] = (first_punch, last_punch)
 
+        # Step 5: Calculate summary per employee
         results = []
         serial_no = 1
 
-        for emp_code, first_name, last_name in employees:
+        for emp_code, info in employee_map.items():
             total_minutes = 0
             total_days = 0
             sum_first_punch_seconds = 0
@@ -275,7 +288,8 @@ class AttendanceSummaryReport(APIView):
 
             result = {
                 "serial_no": serial_no,
-                "employee_name": f"{first_name} {last_name}",
+                "emp_code": emp_code,
+                "employee_name": info['name'],
                 "total_working_hours": format_duration(total_minutes),
                 "total_working_days": total_days,
                 "avg_hours_per_day": format_duration(total_minutes / total_days if total_days else 0),
@@ -286,6 +300,7 @@ class AttendanceSummaryReport(APIView):
                 "between_8_30_and_9_00": between_8_30_and_9_00,
                 "greater_9_00": greater_9_00
             }
+
             results.append(result)
             serial_no += 1
 
@@ -295,3 +310,14 @@ class AttendanceSummaryReport(APIView):
             "report_count": len(results),
             "report": results
         })
+
+
+
+
+
+
+
+
+
+
+

@@ -108,10 +108,10 @@ DATABASES = {
         'PORT': '3306',
     },
     'logs': {
-        'ENGINE': 'mysql.connector.django',
-        'NAME': 'atpldhaka_machine',
-        'USER': 'atpldhaka_machine',
-        'PASSWORD': 'atpldhaka_machine',
+        'ENGINE': 'mysql.connector.django',  
+        'NAME': 'atpldhaka_autoattendance',
+        'USER': 'atpldhaka_autoattendance',
+        'PASSWORD': 'atpldhaka_autoattendance',
         'HOST': 'atpldhaka.com',
         'PORT': '3306',
     }
