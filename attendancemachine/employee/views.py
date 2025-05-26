@@ -244,7 +244,7 @@ class AttendanceSummaryReport(APIView):
 
         for emp_code, info in employee_map.items():
             if emp_code == "00":
-                continue  # Skip this employee
+                continue  # Skip this 00 employee
 
             total_minutes = 0
             total_days = 0
