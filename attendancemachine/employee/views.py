@@ -34,7 +34,7 @@ class EmployeeInfoView(APIView):
                 resized_url = None
 
             data.append({
-                'id': user.id,  # <-- Added user ID here
+                'id': user.id,  # <-- Added user ID here..
                 'emp_code': emp_code,
                 'first_name': user.first_name,
                 'last_name': user.last_name,
