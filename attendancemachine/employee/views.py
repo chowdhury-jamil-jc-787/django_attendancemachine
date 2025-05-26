@@ -28,12 +28,13 @@ class EmployeeInfoView(APIView):
 
             # Generate resized image URL if profile image exists
             if profile.profile_img:
-                original_path = profile.profile_img.url  # e.g., /media/profile_images/imran.jpg/jpg
+                original_path = profile.profile_img.url
                 resized_url = f"/api/profiles/resize/?path={original_path}&w={width}&h={height}"
             else:
                 resized_url = None
 
             data.append({
+                'id': user.id,  # <-- Added user ID here
                 'emp_code': emp_code,
                 'first_name': user.first_name,
                 'last_name': user.last_name,
@@ -42,6 +43,7 @@ class EmployeeInfoView(APIView):
             })
 
         return Response({"success": True, "data": data}, status=200)
+
 
 
 class DailyFirstPunchesView(APIView):
