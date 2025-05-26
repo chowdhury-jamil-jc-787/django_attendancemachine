@@ -210,11 +210,9 @@ class AttendanceSummaryReport(APIView):
         if end_date < start_date:
             return Response({"error": "end_date cannot be before start_date."}, status=400)
 
-        # Step 1: Generate working dates (Mon–Fri)
         all_dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-        working_days = [d for d in all_dates if d.weekday() not in (5, 6)]  # Exclude Saturday and Sunday
+        working_days = [d for d in all_dates if d.weekday() not in (5, 6)]
 
-        # Step 2: Fetch all users with valid emp_code
         users = User.objects.select_related('profile').all()
         employee_map = {
             u.profile.emp_code: {
@@ -224,7 +222,6 @@ class AttendanceSummaryReport(APIView):
             if hasattr(u, 'profile') and u.profile.emp_code
         }
 
-        # Step 3: Fetch punch data from attendance_logs in logs DB
         with connections['logs'].cursor() as cursor:
             cursor.execute("""
                 SELECT user_id, DATE(timestamp), MIN(timestamp), MAX(timestamp)
@@ -234,18 +231,16 @@ class AttendanceSummaryReport(APIView):
             """, [start_date, end_date])
             punch_data = cursor.fetchall()
 
-        # Step 4: Organize punch data by user_id and date
         punch_map = defaultdict(dict)
         for user_id, punch_date, first_punch, last_punch in punch_data:
             punch_map[user_id][punch_date] = (first_punch, last_punch)
 
-        # Step 5: Calculate summary per employee
         results = []
         serial_no = 1
 
         for emp_code, info in employee_map.items():
             if emp_code == "00":
-                continue  # Skip employee with emp_code 00
+                continue  # Skip this employee
 
             total_minutes = 0
             total_days = 0
@@ -256,7 +251,9 @@ class AttendanceSummaryReport(APIView):
             less_8_30 = 0
             between_8_30_and_9_00 = 0
             greater_9_00 = 0
+
             before_7am = 0
+            between_7_and_7_15_59 = 0
             after_7_15_59 = 0
 
             for d in working_days:
@@ -279,10 +276,12 @@ class AttendanceSummaryReport(APIView):
                     else:
                         greater_9_00 += 1
 
-                    # First punch time conditions
-                    if first_punch.time() < datetime.strptime("07:00:00", "%H:%M:%S").time():
+                    punch_time = first_punch.time()
+                    if punch_time < datetime.strptime("07:00:00", "%H:%M:%S").time():
                         before_7am += 1
-                    if first_punch.time() > datetime.strptime("07:15:59", "%H:%M:%S").time():
+                    elif punch_time <= datetime.strptime("07:15:59", "%H:%M:%S").time():
+                        between_7_and_7_15_59 += 1
+                    else:
                         after_7_15_59 += 1
                 else:
                     vacation_count += 1
@@ -315,6 +314,7 @@ class AttendanceSummaryReport(APIView):
                 "between_8_30_and_9_00": between_8_30_and_9_00,
                 "greater_9_00": greater_9_00,
                 "before_7am": before_7am,
+                "between_7_and_7_15_59": between_7_and_7_15_59,
                 "after_7_15_59": after_7_15_59
             }
 
@@ -327,6 +327,7 @@ class AttendanceSummaryReport(APIView):
             "report_count": len(results),
             "report": results
         })
+
 
 
 
