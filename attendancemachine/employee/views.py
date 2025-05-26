@@ -28,7 +28,7 @@ class EmployeeInfoView(APIView):
 
             # Generate resized image URL if profile image exists
             if profile.profile_img:
-                original_path = profile.profile_img.url  # e.g., /media/profile_images/imran.jpg
+                original_path = profile.profile_img.url  # e.g., /media/profile_images/imran.jpg/jpg
                 resized_url = f"/api/profiles/resize/?path={original_path}&w={width}&h={height}"
             else:
                 resized_url = None
