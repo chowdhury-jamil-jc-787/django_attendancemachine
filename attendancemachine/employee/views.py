@@ -212,7 +212,7 @@ class AttendanceSummaryReport(APIView):
 
         # Step 1: Generate working dates (Mon–Fri)
         all_dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-        working_days = [d for d in all_dates if d.weekday() not in (5, 6)]  # Exclude Sat (5) and Sun (6)
+        working_days = [d for d in all_dates if d.weekday() not in (5, 6)]  # Exclude Saturday and Sunday
 
         # Step 2: Fetch all users with valid emp_code
         users = User.objects.select_related('profile').all()
@@ -244,6 +244,9 @@ class AttendanceSummaryReport(APIView):
         serial_no = 1
 
         for emp_code, info in employee_map.items():
+            if emp_code == "00":
+                continue  # Skip employee with emp_code 00
+
             total_minutes = 0
             total_days = 0
             sum_first_punch_seconds = 0
@@ -253,6 +256,8 @@ class AttendanceSummaryReport(APIView):
             less_8_30 = 0
             between_8_30_and_9_00 = 0
             greater_9_00 = 0
+            before_7am = 0
+            after_7_15_59 = 0
 
             for d in working_days:
                 punch = punch_map[emp_code].get(d)
@@ -273,6 +278,12 @@ class AttendanceSummaryReport(APIView):
                         between_8_30_and_9_00 += 1
                     else:
                         greater_9_00 += 1
+
+                    # First punch time conditions
+                    if first_punch.time() < datetime.strptime("07:00:00", "%H:%M:%S").time():
+                        before_7am += 1
+                    if first_punch.time() > datetime.strptime("07:15:59", "%H:%M:%S").time():
+                        after_7_15_59 += 1
                 else:
                     vacation_count += 1
 
@@ -302,7 +313,9 @@ class AttendanceSummaryReport(APIView):
                 "total_vacation": vacation_count,
                 "less_8_30": less_8_30,
                 "between_8_30_and_9_00": between_8_30_and_9_00,
-                "greater_9_00": greater_9_00
+                "greater_9_00": greater_9_00,
+                "before_7am": before_7am,
+                "after_7_15_59": after_7_15_59
             }
 
             results.append(result)
