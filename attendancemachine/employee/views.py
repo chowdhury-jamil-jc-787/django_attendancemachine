@@ -22,6 +22,10 @@ class EmployeeInfoView(APIView):
             profile = user.profile
             emp_code = getattr(profile, 'emp_code', None)
 
+            # Skip employee with emp_code "00"
+            if emp_code == "00":
+                continue
+
             # Generate resized image URL if profile image exists
             if profile.profile_img:
                 original_path = profile.profile_img.url  # e.g., /media/profile_images/imran.jpg
