@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Leave Request Notification</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      color: #333;
+      line-height: 1.6;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 10px 20px;
+      font-size: 16px;
+      font-weight: bold;
+      text-decoration: none;
+      border-radius: 4px;
+      color: #ffffff;
+    }
+
+    .approve {
+      background-color: #4CAF50;
+      border: 1px solid #4CAF50;
+    }
+
+    .reject {
+      background-color: #e53935;
+      border: 1px solid #e53935;
+    }
+
+    .disabled {
+      background-color: #ccc !important;
+      border: 1px solid #aaa !important;
+      color: #666 !important;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .spacer {
+      width: 15px;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Leave Request Notification</h2>
+
+  <p>Hello Sir,</p>
+
+  <p>
+    I hope this message finds you well.<br><br>
+    I would like to request a <strong>{{ leave.leave_type|title }}</strong> leave 
+    {% if leave.leave_type == 'half_day' %}
+      for <strong>{{ leave.date|date:"F j, Y" }}</strong>.
+    {% elif leave.start_date == leave.end_date %}
+      for <strong>{{ leave.start_date|date:"F j, Y" }}</strong>.
+    {% else %}
+      from <strong>{{ leave.start_date|date:"F j, Y" }}</strong> to <strong>{{ leave.end_date|date:"F j, Y" }}</strong>.
+    {% endif %}
+  </p>
+
+  <p>
+    The reason for my leave is:<br>
+    <em>{{ corrected_reason }}</em>
+  </p>
+
+  <p>I kindly request your approval.</p>
+
+  <p>Regards,<br>
+    <strong>{{ user.first_name }} {{ user.last_name }}</strong>
+  </p>
+
+  <hr>
+
+  <p><strong>Action:</strong></p>
+
+  <table cellspacing="0" cellpadding="0">
+    <tr>
+      <td>
+        {% if leave.status == "pending" %}
+          <a href="{{ approve_url }}" target="_blank" class="button approve">Approve</a>
+        {% else %}
+          <span class="button disabled">Already {{ leave.status|title }}</span>
+        {% endif %}
+      </td>
+      <td class="spacer"></td>
+      <td>
+        {% if leave.status == "pending" %}
+          <a href="{{ reject_url }}" target="_blank" class="button reject">Reject</a>
+        {% else %}
+          <span class="button disabled">Already {{ leave.status|title }}</span>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

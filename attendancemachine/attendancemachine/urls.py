@@ -40,6 +40,8 @@ urlpatterns = [
 
     # ✅ Include profiles app routes
     path('api/profiles/', include('profiles.urls')),
+
+    path('api/leave/', include('leave.urls')),
 ]
 
 

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Leave Status Notification</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f9f9f9;
+            color: #333;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            padding: 30px;
+            margin: auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        h2 {
+            color: #4CAF50;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 10px;
+        }
+
+        .status {
+            font-size: 18px;
+            font-weight: bold;
+            color: {% if leave.status == 'approved' %}#4CAF50{% else %}#e53935{% endif %};
+        }
+
+        .section {
+            margin-top: 20px;
+        }
+
+        .section p {
+            margin: 6px 0;
+            font-size: 15px;
+        }
+
+        .label {
+            font-weight: bold;
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 14px;
+            color: #777;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Leave Request {{ leave.status|upper }}</h2>
+
+    <p>Hello <strong>{{ user.get_full_name|default:user.username }}</strong>,</p>
+
+    <p class="status">Your leave request has been <strong>{{ leave.status|upper }}</strong>.</p>
+
+    <div class="section">
+        {% if leave.leave_type == 'half_day' %}
+            <p><span class="label">Leave Type:</span> Half Day</p>
+            <p><span class="label">Date:</span> {{ leave.date|date:"F j, Y" }}</p>
+        {% elif leave.start_date == leave.end_date %}
+            <p><span class="label">Leave Type:</span> Full Day</p>
+            <p><span class="label">Date:</span> {{ leave.start_date|date:"F j, Y" }}</p>
+        {% else %}
+            <p><span class="label">Leave Type:</span> Full Day (Range)</p>
+            <p><span class="label">From:</span> {{ leave.start_date|date:"F j, Y" }}</p>
+            <p><span class="label">To:</span> {{ leave.end_date|date:"F j, Y" }}</p>
+        {% endif %}
+    </div>
+
+    <div class="section">
+        <p><span class="label">Reason:</span> {{ leave.reason }}</p>
+    </div>
+
+    <div class="footer">
+        Thank you for using the Leave Management System.
+    </div>
+</div>
+
+</body>
+</html>
+
