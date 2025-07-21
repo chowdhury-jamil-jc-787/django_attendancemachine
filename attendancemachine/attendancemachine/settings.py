@@ -15,9 +15,11 @@ from datetime import timedelta
 import os
 from dotenv import load_dotenv
 
+
 load_dotenv()  # Load from .env file
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -40,6 +42,8 @@ SECRET_KEY = 'django-insecure-ke*1!olqhvh60&jqe=p_#c#p=l@0d26(3y=%369tpype%-ev&i
 DEBUG = True
 
 ALLOWED_HOSTS = ['*']
+
+
 
 
 # Application definition
@@ -197,5 +201,5 @@ EMAIL_PORT = 465
 EMAIL_USE_SSL = True  # ✅ Use SSL for port 465
 EMAIL_USE_TLS = False  # ❌ TLS is for port 587 only
 EMAIL_HOST_USER = 'system@atpldhaka.com'
-EMAIL_HOST_PASSWORD = 'Jamil1234!'  # ✅ Use a secure password or environment variable
+EMAIL_HOST_PASSWORD = 'Jamil@20201234!'  # ✅ Use a secure password or environment variable
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER

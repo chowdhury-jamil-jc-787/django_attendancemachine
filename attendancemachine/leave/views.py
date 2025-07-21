@@ -1,20 +1,18 @@
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
-from django.core.exceptions import PermissionDenied
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, redirect
 from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.contrib.sites.shortcuts import get_current_site
+from django.http import HttpResponse
+from django.utils.html import escape
 
 from .serializers import LeaveSerializer
 from .models import Leave
 from .utils import send_leave_email, correct_grammar_and_paraphrase
-from rest_framework.permissions import AllowAny
-from django.http import HttpResponse
-from django.utils.html import escape
 
 
 class LeaveRequestView(APIView):
@@ -61,38 +59,57 @@ class LeaveRequestView(APIView):
 
 
 class LeaveApprovalView(APIView):
-    permission_classes = [AllowAny]  # ✅ No auth needed for email click
+    permission_classes = [AllowAny]  # ✅ Still allow public access from email
 
     def get(self, request, pk):
+        """
+        Redirect to frontend leave review page (no approval/rejection here).
+        """
         action = request.GET.get("action")
         leave = get_object_or_404(Leave, pk=pk)
 
-        # ✅ Already processed
-        if leave.status != 'pending':
-            return HttpResponse(f"<h2>This leave was already <strong>{escape(leave.status)}</strong>.</h2>")
+        # Redirect to frontend review page
+        frontend_url = f"https://atpldhaka.com/leave-review/{leave.id}?action={action}"
+        return redirect(frontend_url)
 
-        # ✅ Validate action
+
+class LeaveDecisionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        """
+        Only 'frahman' can approve or reject a leave via frontend.
+        """
+        if request.user.username != "frahman":
+            return Response({"error": "You are not authorized to perform this action."}, status=403)
+
+        action = request.data.get("action")
+        if action not in ["approve", "reject"]:
+            return Response({"error": "Invalid action."}, status=400)
+
+        leave = get_object_or_404(Leave, pk=pk)
+
+        if leave.status != "pending":
+            return Response({"message": f"Leave is already {leave.status}."}, status=400)
+
+        # Update leave status
         if action == "approve":
             leave.status = "approved"
             leave.is_approved = True
-        elif action == "reject":
+        else:
             leave.status = "rejected"
             leave.is_approved = False
-        else:
-            return HttpResponse("<h2>❌ Invalid action.</h2>")
 
-        # ✅ Save updated status
         leave.save()
 
-        # ✅ Generate corrected reason
-        corrected_reason = (
-            correct_grammar_and_paraphrase(leave.reason or "")
-            if leave.leave_type == 'half_day'
-            else leave.reason
-        )
-
-        # ✅ Email to requester
+        # Notify the requester
         try:
+            corrected_reason = (
+                correct_grammar_and_paraphrase(leave.reason or "")
+                if leave.leave_type == 'half_day'
+                else leave.reason
+            )
+
             context = {
                 'user': leave.user,
                 'leave': leave,
@@ -105,17 +122,17 @@ class LeaveApprovalView(APIView):
             email.content_subtype = "html"
             email.send()
         except Exception as e:
-            print(f"❌ Failed to send email to user: {str(e)}")
+            print(f"❌ Failed to notify user: {str(e)}")
 
-        # ✅ Email to admin/approver
+        # Notify admin (optional)
         try:
             admin_email = EmailMessage(
                 subject=f"You have {action}ed a leave request",
                 body=f"You have {action}ed {leave.user.get_full_name()}'s leave request.",
-                to=["jamil@ampec.com.au"]  # Change to dynamic if needed
+                to=["jamil@ampec.com.au"]
             )
             admin_email.send()
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 
-        return HttpResponse(f"<h2>✅ You have <strong>{escape(action)}ed</strong> the leave request.</h2>")
+        return Response({"message": f"Leave has been {leave.status}."}, status=200)

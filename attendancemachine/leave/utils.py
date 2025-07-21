@@ -1,45 +1,49 @@
+import os
+import ssl
+import certifi
 from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.conf import settings
+from openai import OpenAI
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import torch
+# ✅ SSL fix for cPanel
+os.environ['SSL_CERT_FILE'] = certifi.where()
+ssl._create_default_https_context = ssl.create_default_context
 
-# Load grammar correction model
-grammar_tokenizer = AutoTokenizer.from_pretrained("vennify/t5-base-grammar-correction")
-grammar_model = AutoModelForSeq2SeqLM.from_pretrained("vennify/t5-base-grammar-correction")
+# --- OpenRouter Setup ---
+client = OpenAI(
+    api_key=settings.OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1"
+)
 
-# Load paraphrasing model
-paraphrase_tokenizer = AutoTokenizer.from_pretrained("Vamsi/T5_Paraphrase_Paws")
-paraphrase_model = AutoModelForSeq2SeqLM.from_pretrained("Vamsi/T5_Paraphrase_Paws")
-
-
-def correct_grammar_and_paraphrase(text):
+def correct_grammar_and_paraphrase(text: str) -> str:
     try:
-        # Step 1: Grammar correction (3 passes)
-        for _ in range(3):
-            input_text = f"grammar: {text}"
-            inputs = grammar_tokenizer.encode(input_text, return_tensors="pt", truncation=True)
-            outputs = grammar_model.generate(inputs, max_length=128, num_beams=5, early_stopping=True)
-            text = grammar_tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        print("✅ Grammar corrected:", text)
-
-        # Step 2: Paraphrasing
-        paraphrase_input = f"paraphrase: {text} </s>"
-        para_inputs = paraphrase_tokenizer.encode(paraphrase_input, return_tensors="pt", truncation=True)
-        para_outputs = paraphrase_model.generate(para_inputs, max_length=128, num_beams=5, num_return_sequences=1, early_stopping=True)
-        final_text = paraphrase_tokenizer.decode(para_outputs[0], skip_special_tokens=True)
-
-        print("🔁 Paraphrased:", final_text)
-        return final_text
-
+        print("🔍 Correcting grammar via OpenRouter...")
+        completion = client.chat.completions.create(
+            model="meta-llama/llama-3-70b-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Correct this sentence without explanation. Only return the corrected sentence:\n{text}"
+                }
+            ],
+            extra_headers={
+                "HTTP-Referer": "http://localhost:8000",  # Optional
+                "X-Title": "AttendanceMachine"             # Optional
+            }
+        )
+        corrected = completion.choices[0].message.content.strip()
+        print("✅ Corrected sentence:", corrected)
+        return corrected
     except Exception as e:
-        print("⚠️ Correction/Paraphrasing error:", str(e))
+        print("❌ Grammar correction failed:", str(e))
         return text  # fallback
 
 
 def send_leave_email(user, leave, corrected_reason, approve_url=None, reject_url=None):
+    """
+    Sends an email notification for a leave request to the manager.
+    """
     print("📨 Preparing email for:", user.email)
     print("📨 Using corrected_reason:", corrected_reason)
 
@@ -58,6 +62,11 @@ def send_leave_email(user, leave, corrected_reason, approve_url=None, reject_url
 
     email = EmailMessage(subject, body, to=["jamil@ampec.com.au"])
     email.content_subtype = "html"
-    email.send()
+
+    try:
+        email.send()
+        print("✅ Email sent successfully.")
+    except Exception as e:
+        print("❌ Email send error:", str(e))
 
     return body
