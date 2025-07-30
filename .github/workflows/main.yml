@@ -20,7 +20,7 @@ jobs:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
-          server-dir: /djangoattendance.atpldhaka.com/
+          server-dir: /
           local-dir: attendancemachine/
           exclude: |
             env/**
