@@ -106,7 +106,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'attendancemachine.wsgi.application'
 
 
-# Database
+# Databases
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
