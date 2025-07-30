@@ -198,10 +198,15 @@ class DailyFirstPunchesView(APIView):
             "prev_page_url": build_url(page - 1) if page > 1 else None
         }
 
+        # Add total employee count (excluding emp_code == "00")
+        total_employee = User.objects.exclude(profile__emp_code="00").count()
+
         return Response({
             "pagination": pagination,
-            "results": results
+            "results": results,
+            "total_employee": total_employee
         })
+
 
 class AttendanceSummaryReport(APIView):
     permission_classes = [IsAuthenticated]
