@@ -129,7 +129,7 @@ class LeaveDecisionView(APIView):
             admin_email = EmailMessage(
                 subject=f"You have {action}ed a leave request",
                 body=f"You have {action}ed {leave.user.get_full_name()}'s leave request.",
-                to=["jamil@ampec.com.au"]
+                to=["faisal@ampec.com.au"]
             )
             admin_email.send()
         except Exception as e:

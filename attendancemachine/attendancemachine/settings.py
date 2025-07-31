@@ -28,7 +28,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # ✅ your frontend dev server
-    "https://your-production-frontend.com",  # optional
+    "https://djangoattendance.atpldhaka.com",  # optional
 ]
 CORS_ALLOW_CREDENTIALS = True
 
