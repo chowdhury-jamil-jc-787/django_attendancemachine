@@ -193,9 +193,10 @@ class LeaveDecisionView(APIView):
 
 def resolve_user_ids_from_emp_code(emp_code: str):
     """
-    Try multiple common models/fields to resolve an employee code to user IDs.
-    Falls back to username/email if no employee/profile match.
-    Never raises if a model/field doesn't exist.
+    Return a list of user IDs that match the given employee code.
+    - Tries Employee and Profile common fields.
+    - Falls back to matching User by username/email.
+    - ALSO accepts a numeric user ID string, e.g., "72".
     """
     user_ids = set()
 
@@ -204,12 +205,8 @@ def resolve_user_ids_from_emp_code(emp_code: str):
         from employee.models import Employee  # type: ignore
         q = Q()
         for fld in ['emp_code', 'employee_code', 'code', 'employee_id', 'employee_no']:
-            try:
-                q |= Q(**{fld: emp_code})
-            except Exception:
-                pass
-        if q:
-            user_ids.update(Employee.objects.filter(q).values_list('user_id', flat=True))
+            q |= Q(**{fld: emp_code})
+        user_ids.update(Employee.objects.filter(q).values_list('user_id', flat=True))
     except Exception:
         pass
 
@@ -218,21 +215,26 @@ def resolve_user_ids_from_emp_code(emp_code: str):
         from profiles.models import Profile  # type: ignore
         q = Q()
         for fld in ['employee_code', 'emp_code', 'code', 'employee_id', 'employee_no']:
-            try:
-                q |= Q(**{fld: emp_code})
-            except Exception:
-                pass
-        if q:
-            user_ids.update(Profile.objects.filter(q).values_list('user_id', flat=True))
+            q |= Q(**{fld: emp_code})
+        user_ids.update(Profile.objects.filter(q).values_list('user_id', flat=True))
     except Exception:
         pass
 
-    # Fallback: match username/email directly
+    # Fallback: match username/email
     try:
         User = get_user_model()
         user_ids.update(
             User.objects.filter(Q(username=emp_code) | Q(email=emp_code)).values_list('id', flat=True)
         )
+    except Exception:
+        pass
+
+    # NEW: allow numeric User ID
+    try:
+        uid = int(str(emp_code).strip())
+        User = get_user_model()
+        if User.objects.filter(id=uid).exists():
+            user_ids.add(uid)
     except Exception:
         pass
 
@@ -290,17 +292,6 @@ class LeaveListSerializer(serializers.ModelSerializer):
     
 
 class LeaveListView(generics.ListAPIView):
-    """
-    GET /api/leave/list/?emp_code=E123&status=pending&leave_type=full_day&reason=personal
-        &date=2025-08-20&dates=2025-08-20,2025-08-22&is_approved=true
-        &created_from=2025-08-01&created_to=2025-08-31
-        &order_by=-created_at&page=1&page_size=50
-
-    Rules:
-    - If request.user.username == 'frahman' => base queryset is ALL users (optionally narrowed by emp_code).
-    - Else => base queryset is the caller. If emp_code resolves to caller's user_id, it's used.
-             If emp_code belongs to someone else, it's ignored (falls back to caller).
-    """
     permission_classes = [IsAuthenticated]
     serializer_class = LeaveListSerializer
     pagination_class = StandardResultsSetPagination
@@ -308,32 +299,28 @@ class LeaveListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Leave.objects.select_related('user').all()
-
-        emp_code = self.request.query_params.get('emp_code', None)
+        emp_code = self.request.query_params.get('emp_code')
 
         if user.username == 'frahman':
-            # Admin: optionally narrow by emp_code if provided
+            # Admin: if emp_code provided, APPLY it; otherwise all leaves.
             if emp_code:
                 ids = resolve_user_ids_from_emp_code(emp_code)
-                if ids:
-                    qs = qs.filter(user_id__in=ids)
-                else:
-                    qs = qs.none()
+                qs = qs.filter(user_id__in=ids) if ids else qs.none()
         else:
-            # Non-admin: default to caller's own leaves
+            # Non-admin: restrict to own leaves only.
+            # If emp_code was provided but doesn't resolve to CURRENT USER, ignore it.
             if emp_code:
                 ids = resolve_user_ids_from_emp_code(emp_code)
-                # Only allow if the resolved IDs include the current user
                 if user.id in ids:
-                    qs = qs.filter(user_id__in=ids)
-                else:
                     qs = qs.filter(user_id=user.id)
+                else:
+                    qs = qs.filter(user_id=user.id)  # change to `return qs.none()` or raise 403 if you prefer
             else:
                 qs = qs.filter(user_id=user.id)
 
+        # --- the rest of your filters (unchanged) ---
         qp = self.request.query_params
 
-        # --- Filters on columns/fields ---
         if 'id' in qp:
             try:
                 qs = qs.filter(id=int(qp['id']))
@@ -357,9 +344,6 @@ class LeaveListView(generics.ListAPIView):
         if 'informed_status' in qp:
             qs = qs.filter(informed_status__icontains=qp['informed_status'])
 
-        # JSON date filters
-        # - date=YYYY-MM-DD  -> any leave that includes that date
-        # - dates=a,b,c      -> leaves that include ALL the provided dates
         one_date = qp.get('date')
         if one_date:
             qs = qs.filter(date__contains=[one_date])
@@ -368,9 +352,8 @@ class LeaveListView(generics.ListAPIView):
         if many_dates:
             items = [d.strip() for d in many_dates.split(',') if d.strip()]
             for d in items:
-                qs = qs.filter(date__contains=[d])  # requires ALL of them
+                qs = qs.filter(date__contains=[d])
 
-        # created_at / updated_at range filters (ISO 8601 date or datetime)
         created_from = qp.get('created_from')
         created_to   = qp.get('created_to')
         updated_from = qp.get('updated_from')
@@ -379,7 +362,6 @@ class LeaveListView(generics.ListAPIView):
         def _to_dt(s):
             if not s:
                 return None
-            # Try datetime first, then date
             dt = parse_datetime(s)
             if dt:
                 return dt
@@ -394,7 +376,6 @@ class LeaveListView(generics.ListAPIView):
         if from_dt:
             qs = qs.filter(created_at__gte=from_dt)
         if to_dt:
-            # If only a date was provided, bump to end-of-day
             if to_dt.time().isoformat() == "00:00:00":
                 from datetime import datetime, time
                 to_dt = datetime.combine(to_dt.date(), time.max)
@@ -410,11 +391,7 @@ class LeaveListView(generics.ListAPIView):
                 uto_dt = datetime.combine(uto_dt.date(), time.max)
             qs = qs.filter(updated_at__lte=uto_dt)
 
-        # Ordering (validated)
-        order_by = qp.get('order_by', '-created_at')
-        order_field = order_by.lstrip('-')
-        if order_field not in ALLOWED_ORDER_FIELDS:
+        order_by = self.request.query_params.get('order_by', '-created_at')
+        if order_by.lstrip('-') not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
-        qs = qs.order_by(order_by)
-
-        return qs
+        return qs.order_by(order_by)
