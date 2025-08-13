@@ -1,16 +1,16 @@
+# leave/serializers.py
 from rest_framework import serializers
-from django.utils.timezone import now
-from django.db.models import Q
+from datetime import date as date_cls
 from .models import Leave
-import datetime
 
 class LeaveSerializer(serializers.ModelSerializer):
     class Meta:
         model = Leave
         fields = [
             'id', 'leave_type', 'reason',
-            'date', 'start_date', 'end_date',
-            'status', 'email_body', 'created_at'
+            'date',                    # JSON list or single string
+            'status', 'email_body', 'created_at',
+            'informed_status',
         ]
         read_only_fields = ['status', 'email_body', 'created_at']
 
@@ -18,39 +18,52 @@ class LeaveSerializer(serializers.ModelSerializer):
         user = self.context['request'].user
         leave_type = data.get('leave_type')
         reason = data.get('reason')
+        dates = data.get('date')
 
-        # Reason restriction for full_day
-        if leave_type == 'full_day' and reason not in ['personal', 'family', 'sick']:
-            raise serializers.ValidationError("Invalid reason for full-day leave.")
+        # Normalize dates → list of ISO strings
+        if not dates:
+            raise serializers.ValidationError({"date": "Provide at least one date."})
+        if isinstance(dates, str) or isinstance(dates, date_cls):
+            dates = [dates]
+        if not isinstance(dates, list) or len(dates) == 0:
+            raise serializers.ValidationError({"date": "Must be a list or a single date string."})
 
-        # Determine all dates to check
-        if leave_type == 'half_day':
-            leave_dates = [data.get('date')]
-            if not leave_dates[0]:
-                raise serializers.ValidationError("Half-day leave must have a valid date.")
-        else:
-            start = data.get('start_date') or data.get('date')
-            end = data.get('end_date') or data.get('date')
-            if not start or not end:
-                raise serializers.ValidationError("Full-day leave must have start and end date.")
-            if start > end:
-                raise serializers.ValidationError("Start date cannot be after end date.")
+        norm = []
+        for d in dates:
+            if isinstance(d, date_cls):
+                d = d.isoformat()
+            try:
+                date_cls.fromisoformat(d)
+            except Exception:
+                raise serializers.ValidationError({"date": f"Invalid date: {d}"})
+            norm.append(d)
 
-            leave_dates = [start + datetime.timedelta(days=i) for i in range((end - start).days + 1)]
+        # Dedup + sort
+        norm = sorted(set(norm))
 
-        # Check for overlapping existing leave (pending or approved)
+        # 🔒 Half-day must be a single date
+        if leave_type in ('1st_half', '2nd_half') and len(norm) != 1:
+            raise serializers.ValidationError({"date": "Half-day leave requires exactly one date."})
+
+        # Full-day reason restriction (your rule)
+        if leave_type == 'full_day' and reason not in dict(Leave.FULL_DAY_REASONS):
+            raise serializers.ValidationError({"reason": "Invalid reason for full-day (personal/family/sick)."})
+
+        # Overlap check with pending/approved leaves (any shared date)
         existing = Leave.objects.filter(
             user=user,
             status__in=['approved', 'pending']
         ).exclude(id=self.instance.id if self.instance else None)
 
-        for date in leave_dates:
-            if existing.filter(
-                Q(date=date) |
-                Q(start_date__lte=date, end_date__gte=date)
-            ).exists():
-                raise serializers.ValidationError(
-                    f"You already have a leave request on {date}."
-                )
+        for other in existing:
+            if any(d in (other.date or []) for d in norm):
+                # (Optional: allow combining 1st_half + 2nd_half same day — uncomment next block to allow)
+                # if (leave_type in ('1st_half', '2nd_half') and len(norm) == 1 and
+                #     other.date and len(other.date) == 1 and
+                #     norm[0] == other.date[0] and
+                #     {leave_type, other.leave_type} == {'1st_half', '2nd_half'}):
+                #     continue
+                raise serializers.ValidationError({"date": "Overlaps with an existing leave."})
 
+        data['date'] = norm
         return data

@@ -10,7 +10,6 @@
             color: #333;
             padding: 20px;
         }
-
         .container {
             max-width: 600px;
             background-color: #ffffff;
@@ -20,38 +19,26 @@
             margin: auto;
             box-shadow: 0 2px 8px rgba(0,0,0,0.05);
         }
-
         h2 {
             color: #4CAF50;
             border-bottom: 1px solid #ddd;
             padding-bottom: 10px;
         }
-
         .status {
             font-size: 18px;
             font-weight: bold;
             color: {% if leave.status == 'approved' %}#4CAF50{% else %}#e53935{% endif %};
         }
-
-        .section {
-            margin-top: 20px;
-        }
-
-        .section p {
-            margin: 6px 0;
-            font-size: 15px;
-        }
-
-        .label {
-            font-weight: bold;
-        }
-
+        .section { margin-top: 20px; }
+        .section p { margin: 6px 0; font-size: 15px; }
+        .label { font-weight: bold; }
         .footer {
             margin-top: 30px;
             font-size: 14px;
             color: #777;
             text-align: center;
         }
+        ul { margin: 6px 0 0 18px; }
     </style>
 </head>
 <body>
@@ -64,16 +51,19 @@
     <p class="status">Your leave request has been <strong>{{ leave.status|upper }}</strong>.</p>
 
     <div class="section">
-        {% if leave.leave_type == 'half_day' %}
-            <p><span class="label">Leave Type:</span> Half Day</p>
-            <p><span class="label">Date:</span> {{ leave.date|date:"F j, Y" }}</p>
-        {% elif leave.start_date == leave.end_date %}
-            <p><span class="label">Leave Type:</span> Full Day</p>
-            <p><span class="label">Date:</span> {{ leave.start_date|date:"F j, Y" }}</p>
+        <p><span class="label">Leave Type:</span> {{ leave.get_leave_type_display }}</p>
+
+        {% if leave.date and leave.date|length == 1 %}
+            <p><span class="label">Date:</span> {{ leave.date.0 }}</p>
+        {% elif leave.date and leave.date|length > 1 %}
+            <p><span class="label">Dates:</span></p>
+            <ul>
+                {% for d in leave.date %}
+                    <li>{{ d }}</li>
+                {% endfor %}
+            </ul>
         {% else %}
-            <p><span class="label">Leave Type:</span> Full Day (Range)</p>
-            <p><span class="label">From:</span> {{ leave.start_date|date:"F j, Y" }}</p>
-            <p><span class="label">To:</span> {{ leave.end_date|date:"F j, Y" }}</p>
+            <p><span class="label">Date(s):</span> Not provided</p>
         {% endif %}
     </div>
 
@@ -88,4 +78,3 @@
 
 </body>
 </html>
-

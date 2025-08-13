@@ -28,8 +28,7 @@ class LeaveRequestView(APIView):
 
             corrected_reason = (
                 correct_grammar_and_paraphrase(leave.reason or "")
-                if leave.leave_type == 'half_day'
-                else leave.reason
+                if leave.leave_type in ('1st_half', '2nd_half') else leave.reason
             )
 
             domain = get_current_site(request).domain
@@ -77,9 +76,7 @@ class LeaveDecisionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        """
-        Only 'frahman' can approve or reject a leave via frontend.
-        """
+        # Only 'frahman' can take action
         if request.user.username != "frahman":
             return Response({"error": "You are not authorized to perform this action."}, status=403)
 
@@ -87,52 +84,74 @@ class LeaveDecisionView(APIView):
         if action not in ["approve", "reject"]:
             return Response({"error": "Invalid action."}, status=400)
 
-        leave = get_object_or_404(Leave, pk=pk)
+        # Fetch only the fields that exist in DB now (avoid old missing columns)
+        row = Leave.objects.filter(pk=pk).values(
+            "id", "leave_type", "reason", "status", "is_approved", "user_id", "email_body", "informed_status", "date"
+        ).first()
+        if not row:
+            raise Http404("Leave not found.")
 
-        if leave.status != "pending":
-            return Response({"message": f"Leave is already {leave.status}."}, status=400)
+        if row["status"] != "pending":
+            return Response({"message": f"Leave is already {row['status']}."}, status=400)
 
-        # Update leave status
-        if action == "approve":
-            leave.status = "approved"
-            leave.is_approved = True
-        else:
-            leave.status = "rejected"
-            leave.is_approved = False
+        new_status = "approved" if action == "approve" else "rejected"
+        new_is_approved = (action == "approve")
 
-        leave.save()
+        # Update atomically without loading full model instance
+        with transaction.atomic():
+            updated = (Leave.objects
+                .filter(pk=pk, status="pending")
+                .update(status=new_status, is_approved=new_is_approved, updated_at=timezone.now()))
+            if updated == 0:
+                return Response({"message": "Leave status already changed."}, status=400)
 
-        # Notify the requester
+        # Load the user (only required fields)
+        User = get_user_model()
+        user = User.objects.only("id", "email", "username", "first_name", "last_name").get(pk=row["user_id"])
+
+        # Prepare data for email/template without touching missing fields
+        # Grammar correction only for half-day types in your new scheme
+        corrected_reason = (
+            correct_grammar_and_paraphrase(row["reason"] or "")
+            if row["leave_type"] in ("1st_half", "2nd_half")
+            else row["reason"]
+        )
+
+        # Make a simple object with attributes accessible in the template
+        from types import SimpleNamespace
+        # Provide a display string since templates used get_leave_type_display previously
+        display_map = {"full_day": "Full Day", "1st_half": "First Half", "2nd_half": "Second Half"}
+        leave_ns = SimpleNamespace(
+            id=row["id"],
+            leave_type=row["leave_type"],
+            reason=row["reason"],
+            status=new_status,
+            is_approved=new_is_approved,
+            email_body=row.get("email_body"),
+            informed_status=row.get("informed_status"),
+            date=row.get("date") or [],  # list of ISO dates
+            get_leave_type_display=display_map.get(row["leave_type"], row["leave_type"]),
+        )
+
+        # Render and send emails
         try:
-            corrected_reason = (
-                correct_grammar_and_paraphrase(leave.reason or "")
-                if leave.leave_type == 'half_day'
-                else leave.reason
-            )
-
-            context = {
-                'user': leave.user,
-                'leave': leave,
-                'corrected_reason': corrected_reason,
-            }
-            subject = f"Your Leave Request Has Been {leave.status.upper()}"
+            context = {"user": user, "leave": leave_ns, "corrected_reason": corrected_reason}
+            subject = f"Your Leave Request Has Been {new_status.upper()}"
             body = render_to_string("leave/leave_decision_email.html", context)
-
-            email = EmailMessage(subject, body, to=[leave.user.email])
+            email = EmailMessage(subject, body, to=[user.email])
             email.content_subtype = "html"
             email.send()
         except Exception as e:
             print(f"❌ Failed to notify user: {str(e)}")
 
-        # Notify admin (optional)
         try:
             admin_email = EmailMessage(
                 subject=f"You have {action}ed a leave request",
-                body=f"You have {action}ed {leave.user.get_full_name()}'s leave request.",
-                to=["faisal@ampec.com.au"]
+                body=f"You have {action}ed {user.get_full_name() or user.username}'s leave request.",
+                to=["jamil@ampec.com.au"]
             )
             admin_email.send()
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 
-        return Response({"message": f"Leave has been {leave.status}."}, status=200)
+        return Response({"message": f"Leave has been {new_status}."}, status=200)

@@ -1,12 +1,14 @@
+# leave/models.py
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-import datetime
+from datetime import date as date_cls
 
 class Leave(models.Model):
     LEAVE_TYPE_CHOICES = [
         ('full_day', 'Full Day'),
-        ('half_day', 'Half Day'),
+        ('1st_half', 'First Half'),
+        ('2nd_half', 'Second Half'),
     ]
 
     FULL_DAY_REASONS = [
@@ -25,69 +27,91 @@ class Leave(models.Model):
     leave_type = models.CharField(max_length=10, choices=LEAVE_TYPE_CHOICES)
     reason = models.CharField(max_length=50)
 
-    # Dates
-    date = models.DateField(null=True, blank=True)  # For half-day
-    start_date = models.DateField(null=True, blank=True)  # For full-day
-    end_date = models.DateField(null=True, blank=True)
+    # ✅ Array of ISO date strings, e.g., ["2025-08-20"] or ["2025-08-20","2025-08-22"]
+    date = models.JSONField(default=list, blank=True)
 
     # Status
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
     is_approved = models.BooleanField(default=False)
 
-    # Optional email body for debugging/audit
+    # Optional fields kept from your previous version
+    informed_status = models.CharField(max_length=50, null=True, blank=True)
     email_body = models.TextField(blank=True)
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # --- helpers ---
+    @staticmethod
+    def _to_iso(d):
+        if isinstance(d, str):
+            return d
+        if isinstance(d, date_cls):
+            return d.isoformat()
+        raise ValidationError("Each date must be a valid ISO date string (YYYY-MM-DD).")
+
+    @staticmethod
+    def _validate_iso(s):
+        try:
+            date_cls.fromisoformat(s)
+        except Exception:
+            raise ValidationError(f"Invalid date value: {s}. Expect YYYY-MM-DD.")
+
     def clean(self):
-        # Handle date logic
-        if self.leave_type == 'half_day':
-            if not self.date:
-                raise ValidationError("Half-day leave must have a specific date.")
-            if self.start_date or self.end_date:
-                raise ValidationError("Half-day leave cannot have a date range.")
-            dates_to_check = [self.date]
+        # Normalize to list
+        if self.date is None or self.date == "":
+            self.date = []
+        if isinstance(self.date, str):
+            self.date = [self.date]
+        if not isinstance(self.date, list) or len(self.date) == 0:
+            raise ValidationError("Provide at least one date.")
 
-        elif self.leave_type == 'full_day':
-            if self.start_date and self.end_date:
-                if self.start_date > self.end_date:
-                    raise ValidationError("Start date cannot be after end date.")
-            elif self.date:
-                self.start_date = self.end_date = self.date  # Convert single date
-            else:
-                raise ValidationError("Full-day leave requires a date or range.")
+        # Validate each date
+        normalized = []
+        for d in self.date:
+            if isinstance(d, date_cls):
+                d = d.isoformat()
+            try:
+                date_cls.fromisoformat(d)
+            except Exception:
+                raise ValidationError(f"Invalid date value: {d}")
+            normalized.append(d)
 
-            if self.reason not in dict(self.FULL_DAY_REASONS):
-                raise ValidationError("Invalid reason for full-day leave.")
+        # Dedup + sort
+        normalized = sorted(set(normalized))
+        self.date = normalized
 
-            # Build range for validation
-            if self.start_date and self.end_date:
-                delta = (self.end_date - self.start_date).days + 1
-                dates_to_check = [self.start_date + datetime.timedelta(days=i) for i in range(delta)]
-            else:
-                dates_to_check = []
+        # 🔒 Half-day must be exactly one date
+        if self.leave_type in ('1st_half', '2nd_half') and len(self.date) != 1:
+            raise ValidationError("Half-day leave requires exactly one date.")
 
-        else:
-            raise ValidationError("Invalid leave type.")
+        # Full-day reason business rule
+        if self.leave_type == 'full_day' and self.reason not in dict(self.FULL_DAY_REASONS):
+            raise ValidationError("Invalid reason for full-day leave. Use personal/family/sick.")
 
-        # Check for overlap with approved leaves
-        overlapping = Leave.objects.filter(user=self.user, is_approved=True).exclude(id=self.id)
+        # Overlap prevention with pending/approved
+        existing = Leave.objects.filter(
+            user=self.user,
+            status__in=['approved', 'pending']
+        ).exclude(id=self.id)
 
-        if self.leave_type == 'half_day':
-            overlapping = overlapping.filter(date__in=dates_to_check)
-        elif self.start_date and self.end_date:
-            overlapping = overlapping.filter(
-                models.Q(start_date__lte=self.end_date) & models.Q(end_date__gte=self.start_date)
-            )
-
-        if overlapping.exists():
-            raise ValidationError("Leave already exists on selected dates.")
+        for other in existing:
+            other_dates = set(other.date or [])
+            if any(d in other_dates for d in self.date):
+                # (Optional same-day 1st_half + 2nd_half allowance — mirror serializer if you enable it)
+                # if (self.leave_type in ('1st_half', '2nd_half') and len(self.date) == 1 and
+                #     other.date and len(other.date) == 1 and
+                #     self.date[0] == other.date[0] and
+                #     {self.leave_type, other.leave_type} == {'1st_half', '2nd_half'}):
+                #     continue
+                raise ValidationError("Leave already exists on one or more selected dates.")
 
     def save(self, *args, **kwargs):
-        self.full_clean()  # Ensure validation is triggered
+        self.full_clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.user.username} - {self.get_leave_type_display()} - {self.get_status_display()}"
+        sample = ", ".join(self.date[:3])
+        suffix = "..." if len(self.date) > 3 else ""
+        return f"{self.user.username} - {self.get_leave_type_display()} - [{sample}{suffix}] - {self.get_status_display()}"

@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Leave Request Notification</title>
   <style>
     body {
@@ -9,7 +9,6 @@
       color: #333;
       line-height: 1.6;
     }
-
     .button {
       display: inline-block;
       padding: 10px 20px;
@@ -19,17 +18,14 @@
       border-radius: 4px;
       color: #ffffff;
     }
-
     .approve {
       background-color: #4CAF50;
       border: 1px solid #4CAF50;
     }
-
     .reject {
       background-color: #e53935;
       border: 1px solid #e53935;
     }
-
     .disabled {
       background-color: #ccc !important;
       border: 1px solid #aaa !important;
@@ -37,10 +33,8 @@
       cursor: not-allowed;
       pointer-events: none;
     }
-
-    .spacer {
-      width: 15px;
-    }
+    .spacer { width: 15px; }
+    ul { margin: 0.2rem 0 1rem; padding-left: 1.2rem; }
   </style>
 </head>
 <body>
@@ -50,29 +44,36 @@
   <p>Hello Sir,</p>
 
   <p>
-    I hope this message finds you well.<br><br>
-    I would like to request a <strong>{{ leave.leave_type|title }}</strong> leave 
-    {% if leave.leave_type == 'half_day' %}
-      for <strong>{{ leave.date|date:"F j, Y" }}</strong>.
-    {% elif leave.start_date == leave.end_date %}
-      for <strong>{{ leave.start_date|date:"F j, Y" }}</strong>.
+    I hope this message finds you well.<br /><br />
+    I would like to request a
+    <strong>{{ leave.get_leave_type_display }} {# shows "First Half" / "Second Half" / "Full Day" #}
+</strong> leave
+    {% if leave.date and leave.date|length == 1 %}
+      for <strong>{{ leave.date.0 }}</strong>.
+    {% elif leave.date and leave.date|length > 1 %}
+      for the following dates:
+      <ul>
+        {% for d in leave.date %}
+          <li><strong>{{ d }}</strong></li>
+        {% endfor %}
+      </ul>
     {% else %}
-      from <strong>{{ leave.start_date|date:"F j, Y" }}</strong> to <strong>{{ leave.end_date|date:"F j, Y" }}</strong>.
+      (no dates provided)
     {% endif %}
   </p>
 
   <p>
-    The reason for my leave is:<br>
+    The reason for my leave is:<br />
     <em>{{ corrected_reason }}</em>
   </p>
 
   <p>I kindly request your approval.</p>
 
-  <p>Regards,<br>
+  <p>Regards,<br />
     <strong>{{ user.first_name }} {{ user.last_name }}</strong>
   </p>
 
-  <hr>
+  <hr />
 
   <p><strong>Action:</strong></p>
 
