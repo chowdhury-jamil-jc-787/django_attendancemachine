@@ -32,7 +32,7 @@ from django.db.models import Sum, Case, When, Value, FloatField, F, Q
 from django.db.models.functions import Coalesce
 from django.db.models.expressions import ExpressionWrapper
 from django.db.models import Func
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls, datetime, timedelta
 
 
 
@@ -110,7 +110,7 @@ class LeaveDecisionView(APIView):
         row = (Leave.objects
                .filter(pk=pk)
                .values("id", "leave_type", "reason", "status", "is_approved",
-                       "user_id", "email_body", "informed_status", "date")
+                       "user_id", "email_body", "informed_status", "date", "created_at")  # ⬅️ include created_at
                .first())
         if not row:
             raise Http404("Leave not found.")
@@ -121,19 +121,7 @@ class LeaveDecisionView(APIView):
         new_status = "approved" if action == "approve" else "rejected"
         new_is_approved = (action == "approve")
 
-        # Atomic update without loading full model instance
-        with transaction.atomic():
-            updated = (Leave.objects
-                .filter(pk=pk, status="pending")
-                .update(status=new_status, is_approved=new_is_approved, updated_at=timezone.now()))
-            if updated == 0:
-                return Response({"message": "Leave status already changed."}, status=400)
-
-        # Load user (only needed fields)
-        User = get_user_model()
-        user = User.objects.only("id", "email", "username", "first_name", "last_name").get(pk=row["user_id"])
-
-        # Normalize date to a list of strings for the template
+        # Normalize date list
         raw_date = row.get("date")
         if isinstance(raw_date, str):
             date_list = [raw_date]
@@ -141,6 +129,38 @@ class LeaveDecisionView(APIView):
             date_list = raw_date
         else:
             date_list = []
+
+        # ----- compute informed_status only when approving -----
+        informed_status_value = row.get("informed_status")
+        if new_status == "approved" and date_list:
+            try:
+                earliest_leave_date = min(date_cls.fromisoformat(d) for d in date_list)
+                created_date = row["created_at"].date()  # timezone-aware dt -> date
+                # If created at least 3 full days before the (earliest) leave date => informed
+                informed_status_value = "informed" if (earliest_leave_date - created_date).days >= 3 else "uninformed"
+            except Exception:
+                # if parsing fails, fall back to uninformed on approval
+                informed_status_value = "uninformed"
+
+        # Atomic update without loading full model instance
+        with transaction.atomic():
+            update_kwargs = {
+                "status": new_status,
+                "is_approved": new_is_approved,
+                "updated_at": timezone.now(),
+            }
+            if new_status == "approved":
+                update_kwargs["informed_status"] = informed_status_value
+
+            updated = (Leave.objects
+                .filter(pk=pk, status="pending")
+                .update(**update_kwargs))
+            if updated == 0:
+                return Response({"message": "Leave status already changed."}, status=400)
+
+        # Load user (only needed fields)
+        User = get_user_model()
+        user = User.objects.only("id", "email", "username", "first_name", "last_name").get(pk=row["user_id"])
 
         # Grammar correction for half-day types only
         corrected_reason = (
@@ -160,8 +180,8 @@ class LeaveDecisionView(APIView):
             status=new_status,
             is_approved=new_is_approved,
             email_body=row.get("email_body"),
-            informed_status=row.get("informed_status"),
-            date=date_list,  # always a list now
+            informed_status=informed_status_value if new_status == "approved" else row.get("informed_status"),
+            date=date_list,  # always a list
             get_leave_type_display=display_map.get(row["leave_type"], row["leave_type"]),
         )
 
@@ -188,7 +208,10 @@ class LeaveDecisionView(APIView):
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 
-        return Response({"message": f"Leave has been {new_status}."}, status=200)
+        return Response({
+            "message": f"Leave has been {new_status}.",
+            "informed_status": leave_ns.informed_status  # handy to see what got saved
+        }, status=200)
 
 
 
