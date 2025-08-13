@@ -464,15 +464,16 @@ class LeaveListView(generics.ListAPIView):
 
 class LeaveUserSummaryView(APIView):
     """
-    GET /api/leave/summary/?period=yearly&year=2025
-    GET /api/leave/summary/?period=monthly&year=2025&month=7
-    Optional: ?id=<USER_ID> (admin only), ?details=true
-
-    Adds per-user:
-      - total_leave (respects period)
-      - monthly_breakdown: [
-          {"month":"January","leave":1}, ... {"month":"December","leave":0}
-        ]  # always for the given year
+    Adds per-user keys:
+      - total_leave (period-aware)
+      - informed_leave (period-aware)
+      - uninformed_leave (period-aware)
+      - monthly_breakdown (ALWAYS whole requested year):
+          [
+            {"month":"January","leave":X,"informed_leave":Y,"uninformed_leave":Z},
+            ...
+          ]
+      - details (optional, period-aware)
     """
     permission_classes = [IsAuthenticated]
 
@@ -491,7 +492,7 @@ class LeaveUserSummaryView(APIView):
             return Response({"error": "month is required when period=monthly (1-12)."}, status=400)
 
         def date_matches_for_total(iso_str: str) -> bool:
-            """Used for total_leave (respects period)."""
+            """Used for total/informed/uninformed (respects period)."""
             try:
                 d = date_cls.fromisoformat(iso_str)
             except Exception:
@@ -501,13 +502,13 @@ class LeaveUserSummaryView(APIView):
             # default or 'yearly'
             return d.year == year
 
-        def belongs_to_year(iso_str: str) -> int | None:
-            """Used for monthly_breakdown (whole year). Returns month index 1..12 or None."""
+        def month_index_if_in_year(iso_str: str):
+            """Used for monthly_breakdown (whole year). Returns 0..11 or None."""
             try:
                 d = date_cls.fromisoformat(iso_str)
             except Exception:
                 return None
-            return d.month if d.year == year else None
+            return (d.month - 1) if d.year == year else None
 
         # ---- choose users ----
         uid_param = qp.get('id')
@@ -522,7 +523,6 @@ class LeaveUserSummaryView(APIView):
                 # Admin default: hide admin/self and emp_code=="00"
                 users_qs = users_qs.exclude(Q(username='frahman') | Q(profile__emp_code='00'))
         else:
-            # Non-admin: only self (ignore ?id=)
             users_qs = User.objects.select_related('profile').filter(id=user.id)
 
         user_ids = list(users_qs.values_list('id', flat=True))
@@ -530,11 +530,17 @@ class LeaveUserSummaryView(APIView):
         # ---- fetch relevant leaves (approved only) ----
         leaves = (Leave.objects
                   .filter(user_id__in=user_ids, status='approved')
-                  .values('user_id', 'leave_type', 'reason', 'date'))
+                  .values('user_id', 'leave_type', 'reason', 'date', 'informed_status'))
 
-        # ---- prepare accumulators ----
-        totals = {uid: 0.0 for uid in user_ids}  # respects period
-        monthly = {uid: [0.0] * 12 for uid in user_ids}  # whole requested year
+        # ---- accumulators ----
+        totals              = {uid: 0.0 for uid in user_ids}  # period-aware
+        informed_totals     = {uid: 0.0 for uid in user_ids}  # period-aware
+        uninformed_totals   = {uid: 0.0 for uid in user_ids}  # period-aware
+
+        monthly_leave       = {uid: [0.0]*12 for uid in user_ids}  # whole year
+        monthly_informed    = {uid: [0.0]*12 for uid in user_ids}  # whole year
+        monthly_uninformed  = {uid: [0.0]*12 for uid in user_ids}  # whole year
+
         details_map = {uid: [] for uid in user_ids} if want_details else None
 
         # ---- iterate all leaves ----
@@ -542,6 +548,9 @@ class LeaveUserSummaryView(APIView):
             uid = row['user_id']
             leave_type = row['leave_type']
             reason = row['reason']
+            inf_status = (row.get('informed_status') or '').lower()
+            is_informed = (inf_status == 'informed')
+
             dates = row.get('date') or []
             if isinstance(dates, str):
                 dates = [dates]
@@ -549,9 +558,13 @@ class LeaveUserSummaryView(APIView):
             unit = 1.0 if leave_type == 'full_day' else 0.5
 
             for iso in dates:
-                # total_leave (period-aware)
+                # period-aware totals
                 if date_matches_for_total(iso):
-                    totals[uid] = totals.get(uid, 0.0) + unit
+                    totals[uid] += unit
+                    if is_informed:
+                        informed_totals[uid] += unit
+                    else:
+                        uninformed_totals[uid] += unit
                     if want_details:
                         details_map[uid].append({
                             "date": iso,
@@ -559,23 +572,24 @@ class LeaveUserSummaryView(APIView):
                             "reason": reason
                         })
 
-                # monthly_breakdown (entire requested year)
-                m = belongs_to_year(iso)
-                if m:
-                    monthly[uid][m - 1] += unit
+                # monthly breakdown (whole year)
+                mi = month_index_if_in_year(iso)
+                if mi is not None:
+                    monthly_leave[uid][mi] += unit
+                    if is_informed:
+                        monthly_informed[uid][mi] += unit
+                    else:
+                        monthly_uninformed[uid][mi] += unit
 
-        # sort details by date if requested
         if want_details:
             for uid in details_map:
                 details_map[uid].sort(key=lambda x: x["date"])
 
-        # Month names
         month_names = [
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December"
+            "January","February","March","April","May","June",
+            "July","August","September","October","November","December"
         ]
 
-        # ---- response ----
         period_info = {"type": "monthly", "year": year, "month": month} if period == 'monthly' else {
             "type": "yearly", "year": year
         }
@@ -588,7 +602,12 @@ class LeaveUserSummaryView(APIView):
             profile_img_url = profile_img.url if profile_img else None
 
             monthly_breakdown = [
-                {"month": month_names[i], "leave": float(monthly[u.id][i])}
+                {
+                    "month": month_names[i],
+                    "leave": float(monthly_leave[u.id][i]),
+                    "informed_leave": float(monthly_informed[u.id][i]),
+                    "uninformed_leave": float(monthly_uninformed[u.id][i]),
+                }
                 for i in range(12)
             ]
 
@@ -602,6 +621,8 @@ class LeaveUserSummaryView(APIView):
                 "profile_img": profile_img_url,
                 "period": period_info,
                 "total_leave": float(totals.get(u.id, 0.0)),
+                "informed_leave": float(informed_totals.get(u.id, 0.0)),
+                "uninformed_leave": float(uninformed_totals.get(u.id, 0.0)),
                 "monthly_breakdown": monthly_breakdown,
             }
             if want_details:
