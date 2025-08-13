@@ -67,3 +67,29 @@ class LeaveSerializer(serializers.ModelSerializer):
 
         data['date'] = norm
         return data
+
+
+class LeaveListSerializer(serializers.ModelSerializer):
+    user = serializers.SerializerMethodField()
+    leave_type_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Leave
+        fields = [
+            'id', 'leave_type', 'leave_type_display', 'reason',
+            'date', 'status', 'is_approved', 'informed_status',
+            'email_body', 'created_at', 'updated_at', 'user'
+        ]
+
+    def get_user(self, obj):
+        u = obj.user
+        return {
+            "id": u.id,
+            "username": u.username,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "email": u.email,
+        }
+
+    def get_leave_type_display(self, obj):
+        return obj.get_leave_type_display()

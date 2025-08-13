@@ -6,7 +6,6 @@ from django.shortcuts import get_object_or_404, redirect
 from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.urls import reverse
-from django.contrib.sites.shortcuts import get_current_site
 from django.http import Http404, HttpResponse
 from django.utils.html import escape
 
@@ -18,6 +17,18 @@ from types import SimpleNamespace
 from django.db import transaction
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from rest_framework import generics
+from django.db.models import Q
+from django.utils.dateparse import parse_datetime, parse_date
+from rest_framework.pagination import PageNumberPagination
+from .serializers import LeaveListSerializer
+from django.contrib.sites.shortcuts import get_current_site
+from .serializers import LeaveSerializer
+from rest_framework import generics, serializers, status
+
+
+
+
 
 class LeaveRequestView(APIView):
     permission_classes = [IsAuthenticated]
@@ -171,3 +182,239 @@ class LeaveDecisionView(APIView):
             print(f"❌ Failed to notify admin: {str(e)}")
 
         return Response({"message": f"Leave has been {new_status}."}, status=200)
+
+
+
+
+
+# ---------------------------
+# helpers kept inside views.py
+# ---------------------------
+
+def resolve_user_ids_from_emp_code(emp_code: str):
+    """
+    Try multiple common models/fields to resolve an employee code to user IDs.
+    Falls back to username/email if no employee/profile match.
+    Never raises if a model/field doesn't exist.
+    """
+    user_ids = set()
+
+    # Try employee app
+    try:
+        from employee.models import Employee  # type: ignore
+        q = Q()
+        for fld in ['emp_code', 'employee_code', 'code', 'employee_id', 'employee_no']:
+            try:
+                q |= Q(**{fld: emp_code})
+            except Exception:
+                pass
+        if q:
+            user_ids.update(Employee.objects.filter(q).values_list('user_id', flat=True))
+    except Exception:
+        pass
+
+    # Try profiles app
+    try:
+        from profiles.models import Profile  # type: ignore
+        q = Q()
+        for fld in ['employee_code', 'emp_code', 'code', 'employee_id', 'employee_no']:
+            try:
+                q |= Q(**{fld: emp_code})
+            except Exception:
+                pass
+        if q:
+            user_ids.update(Profile.objects.filter(q).values_list('user_id', flat=True))
+    except Exception:
+        pass
+
+    # Fallback: match username/email directly
+    try:
+        User = get_user_model()
+        user_ids.update(
+            User.objects.filter(Q(username=emp_code) | Q(email=emp_code)).values_list('id', flat=True)
+        )
+    except Exception:
+        pass
+
+    return list(user_ids)
+
+
+def parse_bool(val):
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return None
+    return str(val).strip().lower() in ("1", "true", "t", "yes", "y")
+
+
+ALLOWED_ORDER_FIELDS = {
+    'id', 'leave_type', 'reason', 'status', 'is_approved',
+    'informed_status', 'created_at', 'updated_at'
+}
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+# ---------------------------
+# Inline list serializer
+# ---------------------------
+
+class LeaveListSerializer(serializers.ModelSerializer):
+    user = serializers.SerializerMethodField()
+    leave_type_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Leave
+        fields = [
+            'id', 'leave_type', 'leave_type_display', 'reason',
+            'date', 'status', 'is_approved', 'informed_status',
+            'email_body', 'created_at', 'updated_at', 'user'
+        ]
+
+    def get_user(self, obj):
+        u = obj.user
+        return {
+            "id": u.id,
+            "username": u.username,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "email": u.email,
+        }
+
+    def get_leave_type_display(self, obj):
+        return obj.get_leave_type_display()
+    
+
+class LeaveListView(generics.ListAPIView):
+    """
+    GET /api/leave/list/?emp_code=E123&status=pending&leave_type=full_day&reason=personal
+        &date=2025-08-20&dates=2025-08-20,2025-08-22&is_approved=true
+        &created_from=2025-08-01&created_to=2025-08-31
+        &order_by=-created_at&page=1&page_size=50
+
+    Rules:
+    - If request.user.username == 'frahman' => base queryset is ALL users (optionally narrowed by emp_code).
+    - Else => base queryset is the caller. If emp_code resolves to caller's user_id, it's used.
+             If emp_code belongs to someone else, it's ignored (falls back to caller).
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = LeaveListSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Leave.objects.select_related('user').all()
+
+        emp_code = self.request.query_params.get('emp_code', None)
+
+        if user.username == 'frahman':
+            # Admin: optionally narrow by emp_code if provided
+            if emp_code:
+                ids = resolve_user_ids_from_emp_code(emp_code)
+                if ids:
+                    qs = qs.filter(user_id__in=ids)
+                else:
+                    qs = qs.none()
+        else:
+            # Non-admin: default to caller's own leaves
+            if emp_code:
+                ids = resolve_user_ids_from_emp_code(emp_code)
+                # Only allow if the resolved IDs include the current user
+                if user.id in ids:
+                    qs = qs.filter(user_id__in=ids)
+                else:
+                    qs = qs.filter(user_id=user.id)
+            else:
+                qs = qs.filter(user_id=user.id)
+
+        qp = self.request.query_params
+
+        # --- Filters on columns/fields ---
+        if 'id' in qp:
+            try:
+                qs = qs.filter(id=int(qp['id']))
+            except ValueError:
+                qs = qs.none()
+
+        if 'leave_type' in qp:
+            qs = qs.filter(leave_type=qp['leave_type'])
+
+        if 'reason' in qp:
+            qs = qs.filter(reason__icontains=qp['reason'])
+
+        if 'status' in qp:
+            qs = qs.filter(status=qp['status'])
+
+        if 'is_approved' in qp:
+            val = parse_bool(qp.get('is_approved'))
+            if val is not None:
+                qs = qs.filter(is_approved=val)
+
+        if 'informed_status' in qp:
+            qs = qs.filter(informed_status__icontains=qp['informed_status'])
+
+        # JSON date filters
+        # - date=YYYY-MM-DD  -> any leave that includes that date
+        # - dates=a,b,c      -> leaves that include ALL the provided dates
+        one_date = qp.get('date')
+        if one_date:
+            qs = qs.filter(date__contains=[one_date])
+
+        many_dates = qp.get('dates')
+        if many_dates:
+            items = [d.strip() for d in many_dates.split(',') if d.strip()]
+            for d in items:
+                qs = qs.filter(date__contains=[d])  # requires ALL of them
+
+        # created_at / updated_at range filters (ISO 8601 date or datetime)
+        created_from = qp.get('created_from')
+        created_to   = qp.get('created_to')
+        updated_from = qp.get('updated_from')
+        updated_to   = qp.get('updated_to')
+
+        def _to_dt(s):
+            if not s:
+                return None
+            # Try datetime first, then date
+            dt = parse_datetime(s)
+            if dt:
+                return dt
+            d = parse_date(s)
+            if d:
+                from datetime import datetime, time
+                return datetime.combine(d, time.min)
+            return None
+
+        from_dt = _to_dt(created_from)
+        to_dt   = _to_dt(created_to)
+        if from_dt:
+            qs = qs.filter(created_at__gte=from_dt)
+        if to_dt:
+            # If only a date was provided, bump to end-of-day
+            if to_dt.time().isoformat() == "00:00:00":
+                from datetime import datetime, time
+                to_dt = datetime.combine(to_dt.date(), time.max)
+            qs = qs.filter(created_at__lte=to_dt)
+
+        ufrom_dt = _to_dt(updated_from)
+        uto_dt   = _to_dt(updated_to)
+        if ufrom_dt:
+            qs = qs.filter(updated_at__gte=ufrom_dt)
+        if uto_dt:
+            if uto_dt.time().isoformat() == "00:00:00":
+                from datetime import datetime, time
+                uto_dt = datetime.combine(uto_dt.date(), time.max)
+            qs = qs.filter(updated_at__lte=uto_dt)
+
+        # Ordering (validated)
+        order_by = qp.get('order_by', '-created_at')
+        order_field = order_by.lstrip('-')
+        if order_field not in ALLOWED_ORDER_FIELDS:
+            order_by = '-created_at'
+        qs = qs.order_by(order_by)
+
+        return qs
