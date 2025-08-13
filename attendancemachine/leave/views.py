@@ -248,6 +248,11 @@ def parse_bool(val):
         return None
     return str(val).strip().lower() in ("1", "true", "t", "yes", "y")
 
+def parse_int(val):
+    try:
+        return int(str(val).strip())
+    except Exception:
+        return None
 
 ALLOWED_ORDER_FIELDS = {
     'id', 'leave_type', 'reason', 'status', 'is_approved',
@@ -289,7 +294,6 @@ class LeaveListSerializer(serializers.ModelSerializer):
 
     def get_leave_type_display(self, obj):
         return obj.get_leave_type_display()
-    
 
 class LeaveListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -298,33 +302,30 @@ class LeaveListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        qp = self.request.query_params
         qs = Leave.objects.select_related('user').all()
-        emp_code = self.request.query_params.get('emp_code')
+
+        # -------- Access control + base filtering by USER ID --------
+        # ?id=<USER_ID>  (admin can see any; others only themselves)
+        user_id_param = qp.get('id')
+        uid = parse_int(user_id_param) if user_id_param else None
 
         if user.username == 'frahman':
-            # Admin: if emp_code provided, APPLY it; otherwise all leaves.
-            if emp_code:
-                ids = resolve_user_ids_from_emp_code(emp_code)
-                qs = qs.filter(user_id__in=ids) if ids else qs.none()
+            # Admin: if id provided, filter to that user; else all
+            if uid is not None:
+                qs = qs.filter(user_id=uid)
         else:
-            # Non-admin: restrict to own leaves only.
-            # If emp_code was provided but doesn't resolve to CURRENT USER, ignore it.
-            if emp_code:
-                ids = resolve_user_ids_from_emp_code(emp_code)
-                if user.id in ids:
-                    qs = qs.filter(user_id=user.id)
-                else:
-                    qs = qs.filter(user_id=user.id)  # change to `return qs.none()` or raise 403 if you prefer
+            # Non-admin: always restrict to own user_id
+            qs = qs.filter(user_id=user.id)
+
+        # -------- Additional filters (columns) --------
+        # Specific Leave row: use ?leave_id=<LEAVE_ID>
+        leave_id = qp.get('leave_id')
+        if leave_id is not None:
+            lid = parse_int(leave_id)
+            if lid is not None:
+                qs = qs.filter(id=lid)
             else:
-                qs = qs.filter(user_id=user.id)
-
-        # --- the rest of your filters (unchanged) ---
-        qp = self.request.query_params
-
-        if 'id' in qp:
-            try:
-                qs = qs.filter(id=int(qp['id']))
-            except ValueError:
                 qs = qs.none()
 
         if 'leave_type' in qp:
@@ -344,6 +345,7 @@ class LeaveListView(generics.ListAPIView):
         if 'informed_status' in qp:
             qs = qs.filter(informed_status__icontains=qp['informed_status'])
 
+        # JSON date filters
         one_date = qp.get('date')
         if one_date:
             qs = qs.filter(date__contains=[one_date])
@@ -352,8 +354,9 @@ class LeaveListView(generics.ListAPIView):
         if many_dates:
             items = [d.strip() for d in many_dates.split(',') if d.strip()]
             for d in items:
-                qs = qs.filter(date__contains=[d])
+                qs = qs.filter(date__contains=[d])  # include ALL those dates
 
+        # created_at / updated_at ranges
         created_from = qp.get('created_from')
         created_to   = qp.get('created_to')
         updated_from = qp.get('updated_from')
@@ -391,7 +394,8 @@ class LeaveListView(generics.ListAPIView):
                 uto_dt = datetime.combine(uto_dt.date(), time.max)
             qs = qs.filter(updated_at__lte=uto_dt)
 
-        order_by = self.request.query_params.get('order_by', '-created_at')
+        # Ordering (validated)
+        order_by = qp.get('order_by', '-created_at')
         if order_by.lstrip('-') not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
         return qs.order_by(order_by)
