@@ -9,6 +9,7 @@ from corsheaders.defaults import default_headers
 from collections import defaultdict
 from django.contrib.auth.models import User
 
+
 class EmployeeInfoView(APIView):
     permission_classes = [IsAuthenticated]
 

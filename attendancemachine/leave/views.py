@@ -28,6 +28,13 @@ from rest_framework import generics, serializers, status
 from rest_framework.utils.urls import replace_query_param
 
 
+from django.db.models import Sum, Case, When, Value, FloatField, F, Q
+from django.db.models.functions import Coalesce
+from django.db.models.expressions import ExpressionWrapper
+from django.db.models import Func
+from datetime import date as date_cls, datetime
+
+
 
 
 class LeaveRequestView(APIView):
@@ -430,3 +437,153 @@ class LeaveListView(generics.ListAPIView):
         if order_by.lstrip('-') not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
         return qs.order_by(order_by)
+    
+
+class LeaveUserSummaryView(APIView):
+    """
+    GET /api/leave/summary/?period=yearly&year=2025
+    GET /api/leave/summary/?period=monthly&year=2025&month=7
+    Optional: ?id=<USER_ID> (admin only), ?details=true
+
+    Adds per-user:
+      - total_leave (respects period)
+      - monthly_breakdown: [
+          {"month":"January","leave":1}, ... {"month":"December","leave":0}
+        ]  # always for the given year
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        User = get_user_model()
+        user = request.user
+        qp = request.query_params
+
+        # ---- period parsing ----
+        period = (qp.get('period') or '').lower()  # 'yearly' | 'monthly' | ''
+        year = parse_int(qp.get('year')) or datetime.utcnow().year
+        month = parse_int(qp.get('month'))
+        want_details = bool(parse_bool(qp.get('details')))
+
+        if period == 'monthly' and not month:
+            return Response({"error": "month is required when period=monthly (1-12)."}, status=400)
+
+        def date_matches_for_total(iso_str: str) -> bool:
+            """Used for total_leave (respects period)."""
+            try:
+                d = date_cls.fromisoformat(iso_str)
+            except Exception:
+                return False
+            if period == 'monthly':
+                return d.year == year and d.month == month
+            # default or 'yearly'
+            return d.year == year
+
+        def belongs_to_year(iso_str: str) -> int | None:
+            """Used for monthly_breakdown (whole year). Returns month index 1..12 or None."""
+            try:
+                d = date_cls.fromisoformat(iso_str)
+            except Exception:
+                return None
+            return d.month if d.year == year else None
+
+        # ---- choose users ----
+        uid_param = qp.get('id')
+        if user.username == 'frahman':
+            users_qs = User.objects.select_related('profile').all()
+            if uid_param:
+                uid = parse_int(uid_param)
+                if uid is None:
+                    return Response({"error": "id must be an integer."}, status=400)
+                users_qs = users_qs.filter(id=uid)
+            else:
+                # Admin default: hide admin/self and emp_code=="00"
+                users_qs = users_qs.exclude(Q(username='frahman') | Q(profile__emp_code='00'))
+        else:
+            # Non-admin: only self (ignore ?id=)
+            users_qs = User.objects.select_related('profile').filter(id=user.id)
+
+        user_ids = list(users_qs.values_list('id', flat=True))
+
+        # ---- fetch relevant leaves (approved only) ----
+        leaves = (Leave.objects
+                  .filter(user_id__in=user_ids, status='approved')
+                  .values('user_id', 'leave_type', 'reason', 'date'))
+
+        # ---- prepare accumulators ----
+        totals = {uid: 0.0 for uid in user_ids}  # respects period
+        monthly = {uid: [0.0] * 12 for uid in user_ids}  # whole requested year
+        details_map = {uid: [] for uid in user_ids} if want_details else None
+
+        # ---- iterate all leaves ----
+        for row in leaves:
+            uid = row['user_id']
+            leave_type = row['leave_type']
+            reason = row['reason']
+            dates = row.get('date') or []
+            if isinstance(dates, str):
+                dates = [dates]
+
+            unit = 1.0 if leave_type == 'full_day' else 0.5
+
+            for iso in dates:
+                # total_leave (period-aware)
+                if date_matches_for_total(iso):
+                    totals[uid] = totals.get(uid, 0.0) + unit
+                    if want_details:
+                        details_map[uid].append({
+                            "date": iso,
+                            "leave_type": leave_type,
+                            "reason": reason
+                        })
+
+                # monthly_breakdown (entire requested year)
+                m = belongs_to_year(iso)
+                if m:
+                    monthly[uid][m - 1] += unit
+
+        # sort details by date if requested
+        if want_details:
+            for uid in details_map:
+                details_map[uid].sort(key=lambda x: x["date"])
+
+        # Month names
+        month_names = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ]
+
+        # ---- response ----
+        period_info = {"type": "monthly", "year": year, "month": month} if period == 'monthly' else {
+            "type": "yearly", "year": year
+        }
+
+        results = []
+        for u in users_qs:
+            profile = getattr(u, 'profile', None)
+            emp_code = getattr(profile, 'emp_code', None) if profile else None
+            profile_img = getattr(profile, 'profile_img', None)
+            profile_img_url = profile_img.url if profile_img else None
+
+            monthly_breakdown = [
+                {"month": month_names[i], "leave": float(monthly[u.id][i])}
+                for i in range(12)
+            ]
+
+            payload = {
+                "id": u.id,
+                "username": u.username,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "email": u.email,
+                "emp_code": emp_code,
+                "profile_img": profile_img_url,
+                "period": period_info,
+                "total_leave": float(totals.get(u.id, 0.0)),
+                "monthly_breakdown": monthly_breakdown,
+            }
+            if want_details:
+                payload["details"] = details_map.get(u.id, [])
+
+            results.append(payload)
+
+        return Response({"results": results}, status=200)

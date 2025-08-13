@@ -15,6 +15,9 @@ class Leave(models.Model):
         ('personal', 'Personal Leave'),
         ('family', 'Family Issue'),
         ('sick', 'Sick Leave'),
+        ('paternity', 'Paternity Leave'),
+        ('maternity', 'Maternity Leave'),
+        ('wedding', 'Wedding Leave')
     ]
 
     STATUS_CHOICES = [
