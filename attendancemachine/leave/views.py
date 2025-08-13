@@ -25,7 +25,7 @@ from .serializers import LeaveListSerializer
 from django.contrib.sites.shortcuts import get_current_site
 from .serializers import LeaveSerializer
 from rest_framework import generics, serializers, status
-
+from rest_framework.utils.urls import replace_query_param
 
 
 
@@ -260,11 +260,42 @@ ALLOWED_ORDER_FIELDS = {
 }
 
 
-class StandardResultsSetPagination(PageNumberPagination):
-    page_size = 20
-    page_size_query_param = 'page_size'
+class AmpecPagination(PageNumberPagination):
+    page_size = 15                      # default per_page
+    page_size_query_param = 'per_page'  # ?per_page=...
     max_page_size = 200
+    page_query_param = 'page'           # ?page=...
 
+    def _build_url(self, page_number):
+        request = self.request
+        base_url = request.build_absolute_uri()
+        url = replace_query_param(base_url, self.page_query_param, page_number)
+        per_page = self.get_page_size(request) or self.page_size
+        url = replace_query_param(url, self.page_size_query_param, per_page)
+        return url
+
+    def get_next_link(self):
+        if not self.page.has_next():
+            return None
+        return self._build_url(self.page.next_page_number())
+
+    def get_previous_link(self):
+        if not self.page.has_previous():
+            return None
+        return self._build_url(self.page.previous_page_number())
+
+    def get_paginated_response(self, data):
+        return Response({
+            "pagination": {
+                "total": self.page.paginator.count,
+                "per_page": self.get_page_size(self.request) or self.page_size,
+                "current_page": self.page.number,
+                "last_page": self.page.paginator.num_pages,
+                "next_page_url": self.get_next_link(),
+                "prev_page_url": self.get_previous_link(),
+            },
+            "results": data
+        })
 
 # ---------------------------
 # Inline list serializer
@@ -298,7 +329,7 @@ class LeaveListSerializer(serializers.ModelSerializer):
 class LeaveListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = LeaveListSerializer
-    pagination_class = StandardResultsSetPagination
+    pagination_class = AmpecPagination 
 
     def get_queryset(self):
         user = self.request.user
