@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'profiles.apps.ProfilesConfig',  # ✅ keep this
     'mysql.connector.django',
     'leave',
+    'meal',
 ]
 
 MIDDLEWARE = [

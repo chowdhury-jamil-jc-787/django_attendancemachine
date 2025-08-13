@@ -42,6 +42,8 @@ urlpatterns = [
     path('api/profiles/', include('profiles.urls')),
 
     path('api/leave/', include('leave.urls')),
+    
+    path("api/", include("meal.urls")), # Include meal app routes
 ]
 
 

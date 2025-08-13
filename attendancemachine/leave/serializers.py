@@ -93,3 +93,6 @@ class LeaveListSerializer(serializers.ModelSerializer):
 
     def get_leave_type_display(self, obj):
         return obj.get_leave_type_display()
+    
+
+

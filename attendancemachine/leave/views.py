@@ -631,3 +631,124 @@ class LeaveUserSummaryView(APIView):
             results.append(payload)
 
         return Response({"results": results}, status=200)
+
+
+
+
+# ---- Serializer for manual creation (inline) ----
+class ManualLeaveCreateSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    leave_type = serializers.ChoiceField(choices=['full_day', '1st_half', '2nd_half'])
+    # array of YYYY-MM-DD strings
+    date = serializers.ListField(
+        child=serializers.DateField(format='%Y-%m-%d', input_formats=['%Y-%m-%d']),
+        allow_empty=False
+    )
+    reason = serializers.CharField(allow_blank=True, required=False)
+    status = serializers.ChoiceField(choices=['pending', 'approved', 'rejected'], required=False)
+    informed_status = serializers.ChoiceField(choices=['informed', 'uninformed'], required=False)
+
+    def validate(self, attrs):
+        user_id = attrs['user_id']
+        leave_type = attrs['leave_type']
+        dates = attrs['date']
+
+        # normalize & dedupe
+        dates = sorted({d.isoformat() for d in dates})
+        if leave_type in ('1st_half', '2nd_half') and len(dates) != 1:
+            raise serializers.ValidationError("Half-day leave must have exactly one date.")
+        if leave_type == 'full_day' and len(dates) < 1:
+            raise serializers.ValidationError("Full-day leave must have at least one date.")
+
+        # user must exist
+        User = get_user_model()
+        if not User.objects.filter(id=user_id).exists():
+            raise serializers.ValidationError("user_id not found.")
+
+        # overlap check against pending/approved for that user
+        qs = Leave.objects.filter(user_id=user_id, status__in=['pending', 'approved'])
+        for d in dates:
+            if qs.filter(date__contains=[d]).exists():
+                raise serializers.ValidationError(f"Leave already exists on {d} for this user.")
+
+        attrs['date'] = dates  # keep normalized
+        return attrs
+
+
+class ManualLeaveCreateView(APIView):
+    """
+    POST /api/leave/manual/
+    Only 'frahman' can create manual leaves.
+
+    Body:
+    {
+      "user_id": 72,
+      "leave_type": "full_day",        // "full_day" | "1st_half" | "2nd_half"
+      "date": ["2025-08-20","2025-08-21"],  // array of YYYY-MM-DD (half-day => exactly 1)
+      "reason": "Family event",
+      "status": "approved",            // optional; default "approved" for manual
+      "informed_status": "informed"    // optional; if omitted, computed automatically
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # gate: only frahman
+        if request.user.username != 'frahman':
+            return Response({"error": "You are not authorized to perform this action."}, status=403)
+
+        ser = ManualLeaveCreateSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=400)
+
+        data = ser.validated_data
+        user_id = data['user_id']
+        leave_type = data['leave_type']
+        dates = data['date']  # list of ISO strings
+        reason = data.get('reason', '') or ''
+
+        # Default status for manual create: approved (you can change to pending if you like)
+        status_value = data.get('status') or 'approved'
+        is_approved = (status_value == 'approved')
+
+        # Informed status: use provided or compute from "now" vs earliest date
+        informed = data.get('informed_status')
+        if not informed:
+            try:
+                from datetime import date as date_cls
+                earliest = min(date_cls.fromisoformat(d) for d in dates)
+                created = timezone.localdate()  # today's date in server timezone
+                informed = 'informed' if (earliest - created).days >= 3 else 'uninformed'
+            except Exception:
+                informed = 'uninformed'
+
+        # create
+        User = get_user_model()
+        target_user = User.objects.get(id=user_id)
+
+        with transaction.atomic():
+            leave = Leave.objects.create(
+                user=target_user,
+                leave_type=leave_type,
+                reason=reason,
+                date=dates,                   # JSON list
+                status=status_value,
+                is_approved=is_approved,
+                informed_status=informed
+            )
+
+        # minimal response
+        return Response({
+            "message": "Manual leave created.",
+            "data": {
+                "id": leave.id,
+                "user_id": leave.user_id,
+                "leave_type": leave.leave_type,
+                "date": leave.date,
+                "reason": leave.reason,
+                "status": leave.status,
+                "is_approved": leave.is_approved,
+                "informed_status": leave.informed_status,
+                "created_at": leave.created_at,
+            }
+        }, status=201)
