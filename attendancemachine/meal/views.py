@@ -40,13 +40,13 @@ class OverrideMealView(APIView):
 
     - GET    /api/meal/override/            -> list all overrides
     - POST   /api/meal/override/            -> create/update by date
-        body: { "date": "YYYY-MM-DD", "item": "...", "price": 123.45 }
+        body: { "date": "YYYY-MM-DD", "item": "...", "price": 123.45, "notes": "..." }
     - DELETE /api/meal/override/            -> delete by date
         body: { "date": "YYYY-MM-DD" }
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    # ✅ ADDED: list all overrides
+    # ✅ list all overrides
     def get(self, request):
         overrides = MealOverride.objects.all().order_by('-date')
         data = MealOverrideSerializer(overrides, many=True).data
@@ -60,6 +60,7 @@ class OverrideMealView(APIView):
         item = request.data.get("item")
         price = request.data.get("price")
         date_str = request.data.get("date")
+        notes = request.data.get("notes")
 
         # Basic validation
         if not item or price is None or not date_str:
@@ -88,7 +89,7 @@ class OverrideMealView(APIView):
         # Create or update the override for that date
         override, created = MealOverride.objects.update_or_create(
             date=date_obj,
-            defaults={"item": item, "price": price_val}
+            defaults={"item": item, "price": price_val, "notes": notes}
         )
 
         return Response(
@@ -98,6 +99,7 @@ class OverrideMealView(APIView):
                 "date": str(override.date),
                 "item": override.item,
                 "price": override.price,
+                "notes": override.notes,
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
@@ -126,12 +128,12 @@ class OverrideMealView(APIView):
             return Response({"error": "No override found for this date"}, status=status.HTTP_404_NOT_FOUND)
 
 
-# --- Option B: detail GET/PUT/PATCH/DELETE at /api/meal/override/<pk>/ ---
+# --- detail GET/PUT/PATCH/DELETE at /api/meal/override/<pk>/ ---
 
 class MealOverrideSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealOverride
-        fields = ["id", "date", "item", "price", "created_at", "updated_at"]
+        fields = ["id", "date", "item", "price", "notes", "created_at", "updated_at"]
 
 
 class OverrideMealDetailView(RetrieveAPIView):
@@ -139,14 +141,13 @@ class OverrideMealDetailView(RetrieveAPIView):
     GET    /api/meal/override/<pk>/
     PUT    /api/meal/override/<pk>/     (full update)
     PATCH  /api/meal/override/<pk>/     (partial update)
-    DELETE /api/meal/override/<pk>/     (delete by id)  ← ADDED
+    DELETE /api/meal/override/<pk>/     (delete by id)
     """
     queryset = MealOverride.objects.all()
     serializer_class = MealOverrideSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def put(self, request, pk):
-        # Only 'frahman' can update overrides
         if request.user.username != "frahman":
             return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -158,8 +159,8 @@ class OverrideMealDetailView(RetrieveAPIView):
         item = request.data.get("item")
         price = request.data.get("price")
         date_str = request.data.get("date")
+        notes = request.data.get("notes")
 
-        # Full update requires all fields
         if not item or price is None or not date_str:
             return Response(
                 {"error": "date, item, and price are required"},
@@ -178,10 +179,10 @@ class OverrideMealDetailView(RetrieveAPIView):
         override.date = date_obj
         override.item = item
         override.price = price_val
+        override.notes = notes
         try:
             override.save()
         except IntegrityError:
-            # Unique date constraint violated
             return Response(
                 {"error": "An override for this date already exists."},
                 status=status.HTTP_400_BAD_REQUEST
@@ -194,12 +195,12 @@ class OverrideMealDetailView(RetrieveAPIView):
                 "date": str(override.date),
                 "item": override.item,
                 "price": override.price,
+                "notes": override.notes,
             },
             status=status.HTTP_200_OK
         )
 
     def patch(self, request, pk):
-        # Only 'frahman' can update overrides
         if request.user.username != "frahman":
             return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -208,7 +209,6 @@ class OverrideMealDetailView(RetrieveAPIView):
         except MealOverride.DoesNotExist:
             return Response({"error": "Override not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Update only provided fields
         if "date" in request.data:
             date_obj = parse_date(str(request.data.get("date")))
             if not date_obj:
@@ -227,6 +227,9 @@ class OverrideMealDetailView(RetrieveAPIView):
             except (TypeError, ValueError):
                 return Response({"error": "price must be a number"}, status=status.HTTP_400_BAD_REQUEST)
 
+        if "notes" in request.data:
+            override.notes = request.data.get("notes")
+
         try:
             override.save()
         except IntegrityError:
@@ -242,11 +245,11 @@ class OverrideMealDetailView(RetrieveAPIView):
                 "date": str(override.date),
                 "item": override.item,
                 "price": override.price,
+                "notes": override.notes,
             },
             status=status.HTTP_200_OK
         )
 
-    # ✅ ADDED: delete by id
     def delete(self, request, pk):
         if request.user.username != "frahman":
             return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)

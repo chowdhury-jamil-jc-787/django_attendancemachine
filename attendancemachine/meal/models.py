@@ -42,10 +42,10 @@ class MealOverride(models.Model):
     date = models.DateField(unique=True, db_index=True)  # Each date can have only one override
     item = models.CharField(max_length=255)
     price = models.FloatField()
+    notes = models.TextField(blank=True, null=True)  # ✅ NEW: reason or explanation for override
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.date} - {self.item} ({self.price})"
-
