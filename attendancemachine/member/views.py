@@ -1,10 +1,18 @@
-from rest_framework import viewsets, status
+from django.db import IntegrityError
+from django.contrib.auth import get_user_model
+
+from rest_framework import viewsets, status, decorators
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from django.db import IntegrityError
-from .models import Member
-from .serializers import MemberSerializer
+from rest_framework.views import APIView
+
+from .models import Member, MemberAssignment
+from .serializers import MemberSerializer, MemberAssignmentSerializer
 from .pagination import MemberPagination
+
+
+User = get_user_model()
+
 
 class ResponseMixin:
     def ok(self, message="", payload=None, status_code=status.HTTP_200_OK):
@@ -19,16 +27,19 @@ class ResponseMixin:
             body["errors"] = errors
         return Response(body, status=status_code)
 
+
 class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
+    """
+    CRUD for Member with uniform success/fail responses.
+    Also provides:
+      - POST /api/assign/members/{id}/assign-user/   {"user_id": <int>}
+      - POST /api/assign/members/{id}/unassign-user/ {"user_id": <int>}
+      - GET  /api/assign/members/{id}/users/
+    """
     queryset = Member.objects.all().order_by('id')
     serializer_class = MemberSerializer
     permission_classes = [AllowAny]
-    pagination_class = MemberPagination
-
-    # LIST: uses paginator above (already returns success/message)
-    # If you ever want a custom message per request, uncomment and customize:
-    # def list(self, request, *args, **kwargs):
-    #     return super().list(request, *args, **kwargs)
+    pagination_class = MemberPagination  # list() uses this to wrap response
 
     # RETRIEVE
     def retrieve(self, request, *args, **kwargs):
@@ -76,3 +87,99 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_409_CONFLICT
             )
         return self.ok(f"Member {member_id} deleted successfully.", {"id": member_id})
+
+    # --------- EXTRA ACTIONS: pivot (auth_user <-> member) ---------
+
+    @decorators.action(detail=True, methods=['post'], url_path='assign-user', permission_classes=[AllowAny])
+    def assign_user(self, request, pk=None):
+        """
+        Link a user to this member via the pivot.
+        Body: { "user_id": 5 }
+        """
+        member = self.get_object()
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return self.fail("user_id is required.")
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return self.fail("User not found.", status_code=status.HTTP_404_NOT_FOUND)
+
+        try:
+            link, created = MemberAssignment.objects.get_or_create(user=user, member=member)
+        except IntegrityError:
+            return self.fail("Could not assign user due to an integrity error.", status_code=status.HTTP_409_CONFLICT)
+
+        data = MemberAssignmentSerializer(link).data
+        msg = "User assigned to member." if created else "User already assigned to member."
+        return self.ok(msg, {"assignment": data})
+
+    @decorators.action(detail=True, methods=['post'], url_path='unassign-user', permission_classes=[AllowAny])
+    def unassign_user(self, request, pk=None):
+        """
+        Remove a user<->member link.
+        Body: { "user_id": 5 }
+        """
+        member = self.get_object()
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return self.fail("user_id is required.")
+
+        deleted, _ = MemberAssignment.objects.filter(user_id=user_id, member=member).delete()
+        if deleted:
+            return self.ok("User unassigned from member.", {"user_id": int(user_id), "member_id": member.id})
+        return self.fail("Assignment did not exist.", status_code=status.HTTP_404_NOT_FOUND)
+
+    @decorators.action(detail=True, methods=['get'], url_path='users', permission_classes=[AllowAny])
+    def list_users(self, request, pk=None):
+        """
+        List user IDs (and optional pivot records) linked to this member.
+        """
+        member = self.get_object()
+        assignments = MemberAssignment.objects.filter(member=member).select_related('user').order_by('id')
+        ser = MemberAssignmentSerializer(assignments, many=True)
+        user_ids = [a['user_id'] for a in ser.data]  # from PrimaryKeyRelatedField
+        return self.ok("Users linked to member fetched successfully.", {
+            "user_ids": user_ids,
+            "assignments": ser.data
+        })
+
+
+class UserMembersView(ResponseMixin, APIView):
+    """
+    Vice-versa endpoint:
+      GET /api/assign/users/<user_id>/members/?page=1&perPage=10
+    Returns members linked to the given user, with the same pagination envelope.
+    """
+    permission_classes = [AllowAny]
+    pagination_class = MemberPagination
+
+    def get(self, request, user_id: int):
+        # Validate user
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return self.fail("User not found.", status_code=status.HTTP_404_NOT_FOUND)
+
+        # Members linked to this user (via pivot)
+        qs = (
+            Member.objects.filter(user_assignments__user=user)
+            .order_by('id')
+            .distinct()
+        )
+
+        # Paginate manually to keep consistent envelope/message
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        data = MemberSerializer(page, many=True).data
+
+        return Response({
+            "success": True,
+            "message": "Members for user fetched successfully.",
+            "members": data,
+            "pagination": {
+                "page": paginator.page.number,
+                "total": paginator.page.paginator.count,
+                "perPage": paginator.get_page_size(request),
+            }
+        }, status=status.HTTP_200_OK)
