@@ -1,5 +1,6 @@
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model
+from django.db.models import Prefetch
 
 from rest_framework import viewsets, status, decorators
 from rest_framework.permissions import AllowAny
@@ -9,9 +10,6 @@ from rest_framework.views import APIView
 from .models import Member, MemberAssignment
 from .serializers import MemberSerializer, MemberAssignmentSerializer
 from .pagination import MemberPagination
-
-from django.db.models import Prefetch
-from rest_framework import status
 
 
 User = get_user_model()
@@ -35,9 +33,12 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     """
     CRUD for Member with uniform success/fail responses.
     Also provides:
-      - POST /api/assign/members/{id}/assign-user/   {"user_id": <int>}
-      - POST /api/assign/members/{id}/unassign-user/ {"user_id": <int>}
+      - POST /api/assign/members/{id}/assign-user/    {"user_id": <int>}
+      - POST /api/assign/members/{id}/unassign-user/  {"user_id": <int>}
       - GET  /api/assign/members/{id}/users/
+      - POST /api/assign/members/{id}/delete/         (server-safe delete)
+      - POST /api/assign/members/{id}/update/         (server-safe PUT)
+      - POST /api/assign/members/{id}/patch/          (server-safe PATCH)
     """
     queryset = Member.objects.all().order_by('id')
     serializer_class = MemberSerializer
@@ -78,7 +79,7 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         self.perform_update(serializer)
         return self.ok("Member updated successfully.", {"member": serializer.data})
 
-    # DELETE
+    # DELETE (standard)
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         member_id = instance.id
@@ -90,6 +91,34 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_409_CONFLICT
             )
         return self.ok(f"Member {member_id} deleted successfully.", {"id": member_id})
+
+    # --------- EXTRA ACTIONS: server-safe POST aliases for blocked verbs ---------
+
+    @decorators.action(detail=True, methods=['post'], url_path='delete', permission_classes=[AllowAny])
+    def delete_via_post(self, request, *args, **kwargs):
+        """
+        Server-safe delete for hosts that block DELETE.
+        POST /api/assign/members/{id}/delete/
+        """
+        return self.destroy(request, *args, **kwargs)
+
+    @decorators.action(detail=True, methods=['post'], url_path='update', permission_classes=[AllowAny])
+    def update_via_post(self, request, *args, **kwargs):
+        """
+        Server-safe PUT for hosts that block PUT.
+        POST /api/assign/members/{id}/update/
+        Body: same as PUT.
+        """
+        return self.update(request, *args, **kwargs)
+
+    @decorators.action(detail=True, methods=['post'], url_path='patch', permission_classes=[AllowAny])
+    def patch_via_post(self, request, *args, **kwargs):
+        """
+        Server-safe PATCH for hosts that block PATCH.
+        POST /api/assign/members/{id}/patch/
+        Body: same as PATCH.
+        """
+        return self.partial_update(request, *args, **kwargs)
 
     # --------- EXTRA ACTIONS: pivot (auth_user <-> member) ---------
 
@@ -139,7 +168,12 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         List user IDs (and optional pivot records) linked to this member.
         """
         member = self.get_object()
-        assignments = MemberAssignment.objects.filter(member=member).select_related('user').order_by('id')
+        assignments = (
+            MemberAssignment.objects
+            .filter(member=member)
+            .select_related('user')
+            .order_by('id')
+        )
         ser = MemberAssignmentSerializer(assignments, many=True)
         user_ids = [a['user_id'] for a in ser.data]  # from PrimaryKeyRelatedField
         return self.ok("Users linked to member fetched successfully.", {
@@ -192,6 +226,7 @@ class UsersMembersView(APIView):
     """
     GET /api/assign/users/members/?page=1&perPage=10
     Optional: ?user_ids=1,2,3
+    Returns users with their linked members (paginated by users).
     """
     permission_classes = [AllowAny]
     pagination_class = MemberPagination
@@ -212,7 +247,7 @@ class UsersMembersView(APIView):
         if ids:
             qs = qs.filter(id__in=ids)
 
-        # ✅ Prefetch the M2M "members" directly (through MemberAssignment)
+        # Prefetch the M2M "members" directly (through MemberAssignment)
         qs = qs.prefetch_related(
             Prefetch('members', queryset=Member.objects.all().order_by('id'))
         )
@@ -222,7 +257,7 @@ class UsersMembersView(APIView):
 
         results = []
         for u in page:
-            members_qs = u.members.all()  # comes from related_name='members'
+            members_qs = u.members.all()  # from related_name='members' on Member.users
             results.append({
                 "user": {
                     "id": u.id,
