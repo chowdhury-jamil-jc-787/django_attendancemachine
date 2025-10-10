@@ -44,6 +44,8 @@ urlpatterns = [
     path('api/leave/', include('leave.urls')),
     
     path("api/", include("meal.urls")), # Include meal app routes
+
+    path('api/assign/', include('member.urls')),
 ]
 
 

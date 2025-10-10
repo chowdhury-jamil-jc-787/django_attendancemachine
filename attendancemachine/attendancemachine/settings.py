@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     'mysql.connector.django',
     'leave',
     'meal',
+    'member',
 ]
 
 MIDDLEWARE = [
@@ -85,6 +86,8 @@ REST_FRAMEWORK = {
         'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',  
     ),
+    "DEFAULT_PAGINATION_CLASS": "member.pagination.MemberPagination",
+    "PAGE_SIZE": 10,
 }
 
 ROOT_URLCONF = 'attendancemachine.urls'
