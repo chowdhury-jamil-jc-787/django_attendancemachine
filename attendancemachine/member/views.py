@@ -11,6 +11,7 @@ from .serializers import MemberSerializer, MemberAssignmentSerializer
 from .pagination import MemberPagination
 
 from django.db.models import Prefetch
+from rest_framework import status
 
 
 User = get_user_model()
@@ -187,54 +188,48 @@ class UserMembersView(ResponseMixin, APIView):
         }, status=status.HTTP_200_OK)
 
 
-class UsersMembersView(ResponseMixin, APIView):
+class UsersMembersView(APIView):
     """
     GET /api/assign/users/members/?page=1&perPage=10
-    Optional: ?user_ids=1,2,3 to filter specific users.
-    Returns users with their linked members.
+    Optional: ?user_ids=1,2,3
     """
     permission_classes = [AllowAny]
-    pagination_class = MemberPagination  # reuse for page/perPage/total
+    pagination_class = MemberPagination
 
     def get(self, request):
-        # optional filter: ?user_ids=1,2,3
         raw_ids = request.query_params.get('user_ids', '').strip()
         ids = []
         if raw_ids:
             try:
                 ids = [int(x) for x in raw_ids.split(',') if x.strip()]
             except ValueError:
-                return self.fail("user_ids must be a comma-separated list of integers.")
+                return Response(
+                    {"success": False, "message": "user_ids must be a comma-separated list of integers."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-        # base users queryset
-        User = get_user_model()
-        users_qs = User.objects.all().order_by('id')
+        qs = User.objects.all().order_by('id')
         if ids:
-            users_qs = users_qs.filter(id__in=ids)
+            qs = qs.filter(id__in=ids)
 
-        # prefetch members via pivot to avoid N+1
-        users_qs = users_qs.prefetch_related(
-            Prefetch(
-                'member_assignments__member',
-                queryset=Member.objects.all().order_by('id'),
-                to_attr='prefetched_members'
-            )
+        # ✅ Prefetch the M2M "members" directly (through MemberAssignment)
+        qs = qs.prefetch_related(
+            Prefetch('members', queryset=Member.objects.all().order_by('id'))
         )
 
-        # paginate users
         paginator = self.pagination_class()
-        page = paginator.paginate_queryset(users_qs, request, view=self)
+        page = paginator.paginate_queryset(qs, request, view=self)
 
         results = []
         for u in page:
-            members = getattr(u, 'prefetched_members', [])
+            members_qs = u.members.all()  # comes from related_name='members'
             results.append({
                 "user": {
                     "id": u.id,
                     "username": getattr(u, 'username', None),
                     "email": getattr(u, 'email', None),
                 },
-                "members": MemberSerializer(members, many=True).data
+                "members": MemberSerializer(members_qs, many=True).data
             })
 
         return Response({
@@ -243,7 +238,7 @@ class UsersMembersView(ResponseMixin, APIView):
             "results": results,
             "pagination": {
                 "page": paginator.page.number,
-                "total": paginator.page.paginator.count,   # total users matching the filter
+                "total": paginator.page.paginator.count,
                 "perPage": paginator.get_page_size(request),
             }
         }, status=status.HTTP_200_OK)
