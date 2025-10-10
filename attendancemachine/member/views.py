@@ -10,6 +10,8 @@ from .models import Member, MemberAssignment
 from .serializers import MemberSerializer, MemberAssignmentSerializer
 from .pagination import MemberPagination
 
+from django.db.models import Prefetch
+
 
 User = get_user_model()
 
@@ -180,6 +182,68 @@ class UserMembersView(ResponseMixin, APIView):
             "pagination": {
                 "page": paginator.page.number,
                 "total": paginator.page.paginator.count,
+                "perPage": paginator.get_page_size(request),
+            }
+        }, status=status.HTTP_200_OK)
+
+
+class UsersMembersView(ResponseMixin, APIView):
+    """
+    GET /api/assign/users/members/?page=1&perPage=10
+    Optional: ?user_ids=1,2,3 to filter specific users.
+    Returns users with their linked members.
+    """
+    permission_classes = [AllowAny]
+    pagination_class = MemberPagination  # reuse for page/perPage/total
+
+    def get(self, request):
+        # optional filter: ?user_ids=1,2,3
+        raw_ids = request.query_params.get('user_ids', '').strip()
+        ids = []
+        if raw_ids:
+            try:
+                ids = [int(x) for x in raw_ids.split(',') if x.strip()]
+            except ValueError:
+                return self.fail("user_ids must be a comma-separated list of integers.")
+
+        # base users queryset
+        User = get_user_model()
+        users_qs = User.objects.all().order_by('id')
+        if ids:
+            users_qs = users_qs.filter(id__in=ids)
+
+        # prefetch members via pivot to avoid N+1
+        users_qs = users_qs.prefetch_related(
+            Prefetch(
+                'member_assignments__member',
+                queryset=Member.objects.all().order_by('id'),
+                to_attr='prefetched_members'
+            )
+        )
+
+        # paginate users
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(users_qs, request, view=self)
+
+        results = []
+        for u in page:
+            members = getattr(u, 'prefetched_members', [])
+            results.append({
+                "user": {
+                    "id": u.id,
+                    "username": getattr(u, 'username', None),
+                    "email": getattr(u, 'email', None),
+                },
+                "members": MemberSerializer(members, many=True).data
+            })
+
+        return Response({
+            "success": True,
+            "message": "Members grouped by user fetched successfully.",
+            "results": results,
+            "pagination": {
+                "page": paginator.page.number,
+                "total": paginator.page.paginator.count,   # total users matching the filter
                 "perPage": paginator.get_page_size(request),
             }
         }, status=status.HTTP_200_OK)
