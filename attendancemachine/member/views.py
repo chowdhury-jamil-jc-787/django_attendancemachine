@@ -59,11 +59,11 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         self.perform_create(serializer)
         return self.ok("Member created successfully.", {"member": serializer.data}, status.HTTP_201_CREATED)
 
-    # UPDATE (PUT)
+    # UPDATE (PUT) — allow partial like PATCH
     def update(self, request, *args, **kwargs):
-        partial = False
         instance = self.get_object()
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        # allow partial updates even for PUT
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
         if not serializer.is_valid():
             return self.fail("Could not update member.", serializer.errors)
         self.perform_update(serializer)
