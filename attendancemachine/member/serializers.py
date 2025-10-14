@@ -8,6 +8,9 @@ class MemberSerializer(serializers.ModelSerializer):
     class Meta:
         model = Member
         fields = ['id', 'name', 'email', 'position']
+        extra_kwargs = {
+            'position': {'required': False, 'allow_blank': True}
+        }
 
 class MemberAssignmentSerializer(serializers.ModelSerializer):
     # optional: show some details

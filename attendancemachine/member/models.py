@@ -4,7 +4,7 @@ from django.db import models
 class Member(models.Model):
     name = models.CharField(max_length=255)
     email = models.EmailField(unique=True)
-    position = models.CharField(max_length=255)
+    position = models.CharField(max_length=255, blank=True, default="")
 
     # OPTIONAL: many-to-many “view” using the pivot below
     users = models.ManyToManyField(
