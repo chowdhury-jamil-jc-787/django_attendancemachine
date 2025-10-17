@@ -124,7 +124,6 @@ class LeaveDecisionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        # Only 'frahman' can take action
         if request.user.username != "frahman":
             return Response({"error": "You are not authorized to perform this action."}, status=403)
 
@@ -132,22 +131,19 @@ class LeaveDecisionView(APIView):
         if action not in ["approve", "reject"]:
             return Response({"error": "Invalid action."}, status=400)
 
-        # Fetch only existing fields (avoid old start_date/end_date)
         row = (Leave.objects
                .filter(pk=pk)
-               .values("id", "leave_type", "reason", "status", "is_approved",
-                       "user_id", "email_body", "informed_status", "date", "created_at")
+               .values("id","leave_type","reason","status","is_approved",
+                       "user_id","email_body","informed_status","date","created_at")
                .first())
         if not row:
             raise Http404("Leave not found.")
-
         if row["status"] != "pending":
             return Response({"message": f"Leave is already {row['status']}."}, status=400)
 
         new_status = "approved" if action == "approve" else "rejected"
         new_is_approved = (action == "approve")
 
-        # Normalize date list
         raw_date = row.get("date")
         if isinstance(raw_date, str):
             date_list = [raw_date]
@@ -156,18 +152,15 @@ class LeaveDecisionView(APIView):
         else:
             date_list = []
 
-        # ----- compute informed_status only when approving -----
         informed_status_value = row.get("informed_status")
         if new_status == "approved" and date_list:
             try:
                 earliest_leave_date = min(date_cls.fromisoformat(d) for d in date_list)
-                created_date = row["created_at"].date()  # timezone-aware dt -> date
-                # If created at least 3 full days before the (earliest) leave date => informed
+                created_date = row["created_at"].date()
                 informed_status_value = "informed" if (earliest_leave_date - created_date).days >= 3 else "uninformed"
             except Exception:
                 informed_status_value = "uninformed"
 
-        # Atomic update without loading full model instance
         with transaction.atomic():
             update_kwargs = {
                 "status": new_status,
@@ -176,28 +169,20 @@ class LeaveDecisionView(APIView):
             }
             if new_status == "approved":
                 update_kwargs["informed_status"] = informed_status_value
-
-            updated = (Leave.objects
-                .filter(pk=pk, status="pending")
-                .update(**update_kwargs))
+            updated = (Leave.objects.filter(pk=pk, status="pending").update(**update_kwargs))
             if updated == 0:
                 return Response({"message": "Leave status already changed."}, status=400)
 
-        # Load user (only needed fields)
         User = get_user_model()
-        user = User.objects.only("id", "email", "username", "first_name", "last_name").get(pk=row["user_id"])
+        user = User.objects.only("id","email","username","first_name","last_name").get(pk=row["user_id"])
 
-        # Grammar correction for half-day types only
         corrected_reason = (
             correct_grammar_and_paraphrase(row["reason"] or "")
-            if row["leave_type"] in ("1st_half", "2nd_half")
+            if row["leave_type"] in ("1st_half","2nd_half")
             else row["reason"]
         )
 
-        # Provide a display label like get_leave_type_display
         display_map = {"full_day": "Full Day", "1st_half": "First Half", "2nd_half": "Second Half"}
-
-        # Lightweight object for templates
         leave_ns = SimpleNamespace(
             id=row["id"],
             leave_type=row["leave_type"],
@@ -206,54 +191,54 @@ class LeaveDecisionView(APIView):
             is_approved=new_is_approved,
             email_body=row.get("email_body"),
             informed_status=informed_status_value if new_status == "approved" else row.get("informed_status"),
-            date=date_list,  # always a list
+            date=date_list,
             get_leave_type_display=display_map.get(row["leave_type"], row["leave_type"]),
         )
 
-        # Notify admin (HTML template)
+        # ✅ Notify the applied user (you had removed this block)
+        try:
+            requester_ctx = {"user": user, "leave": leave_ns, "corrected_reason": corrected_reason}
+            requester_subject = f"Your Leave Request Has Been {new_status.upper()}"
+            requester_body = render_to_string("leave/leave_decision_email.html", requester_ctx)
+            from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+            requester_msg = EmailMessage(requester_subject, requester_body, from_email=from_email, to=[user.email])
+            requester_msg.content_subtype = "html"
+            requester_msg.send()
+        except Exception as e:
+            print(f"❌ Failed to notify user: {str(e)}")
+
+        # Admin notice (HTML)
         try:
             display_name = (user.get_full_name() or user.username)
             admin_ctx = {
-                "action": action,                 # "approve" / "reject"
+                "action": action,
                 "display_name": display_name,
                 "leave": leave_ns,
                 "reason": corrected_reason or row.get("reason", ""),
             }
             admin_subject = f"You have {action}ed a leave request"
             admin_body = render_to_string("leave/admin_decision_email.html", admin_ctx)
-
             from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
-            admin_msg = EmailMessage(
-                admin_subject,
-                admin_body,
-                from_email=from_email,
-                to=["jamil@ampec.com.au"],        # change as needed
-                # cc=["..."], bcc=["..."], reply_to=["..."]  # optional
-            )
+            admin_msg = EmailMessage(admin_subject, admin_body, from_email=from_email, to=["jamil@ampec.com.au"])
             admin_msg.content_subtype = "html"
             admin_msg.send()
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 
-        # -------- Team notification to Member list on APPROVAL (pivot or M2M) --------
+        # Team notice (on approval)
         if new_status == "approved":
             try:
-                # Preferred: use the M2M reverse relation (Member.users through MemberAssignment)
                 team_emails = list(
-                    user.members
-                        .values_list("email", flat=True)
+                    user.members.values_list("email", flat=True)
                         .exclude(email__isnull=True)
                         .exclude(email="")
                         .distinct()
                 )
-
-                # Fallback via explicit model resolution if needed
                 if not team_emails:
                     Member = _get_member_model()
                     if Member:
                         team_emails = list(
-                            Member.objects
-                                .filter(user_assignments__user_id=row["user_id"])
+                            Member.objects.filter(user_assignments__user_id=row["user_id"])
                                 .values_list("email", flat=True)
                                 .exclude(email__isnull=True)
                                 .exclude(email="")
@@ -263,22 +248,15 @@ class LeaveDecisionView(APIView):
                 if team_emails:
                     display_name = (user.get_full_name() or user.username)
                     team_subject = f"Team Notice: {display_name}'s leave ({leave_ns.get_leave_type_display})"
-
                     team_ctx = {
                         "display_name": display_name,
                         "leave": leave_ns,
-                        "dates": date_list,                                   # normalized list
-                        "reason": corrected_reason or row.get("reason", ""),  # corrected if present
+                        "dates": date_list,
+                        "reason": corrected_reason or row.get("reason", ""),
                     }
                     team_body = render_to_string("leave/team_leave_notice.html", team_ctx)
-
                     from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
-                    team_msg = EmailMessage(
-                        team_subject,
-                        team_body,
-                        from_email=from_email,
-                        to=team_emails  # send directly to all members
-                    )
+                    team_msg = EmailMessage(team_subject, team_body, from_email=from_email, to=team_emails)
                     team_msg.content_subtype = "html"
                     team_msg.send()
                 else:
@@ -290,6 +268,7 @@ class LeaveDecisionView(APIView):
             "message": f"Leave has been {new_status}.",
             "informed_status": leave_ns.informed_status
         }, status=200)
+
 
 
 # -------------------------------------------------
