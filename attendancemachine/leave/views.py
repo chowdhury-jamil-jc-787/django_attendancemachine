@@ -1,41 +1,38 @@
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.response import Response
-from rest_framework import status
-from django.shortcuts import get_object_or_404, redirect
+from datetime import date as date_cls, datetime
+
+from django.apps import apps
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.contrib.sites.shortcuts import get_current_site
 from django.core.mail import EmailMessage
+from django.db import transaction
+from django.db.models import Q
+from django.http import Http404
 from django.template.loader import render_to_string
 from django.urls import reverse
-from django.http import Http404, HttpResponse
-from django.utils.html import escape
+from django.utils import timezone
 
-from .serializers import LeaveSerializer
-from .models import Leave
-from .utils import send_leave_email, correct_grammar_and_paraphrase
+from rest_framework import serializers
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.response import Response
+from rest_framework.utils.urls import replace_query_param
+from rest_framework.views import APIView
+from rest_framework import generics
+
+from django.utils.dateparse import parse_datetime, parse_date
 
 from types import SimpleNamespace
-from django.db import transaction
-from django.utils import timezone
-from django.contrib.auth import get_user_model
-from rest_framework import generics
-from django.db.models import Q
-from django.utils.dateparse import parse_datetime, parse_date
-from rest_framework.pagination import PageNumberPagination
-from .serializers import LeaveListSerializer
-from django.contrib.sites.shortcuts import get_current_site
+from django.shortcuts import redirect
+
+from .models import Leave
 from .serializers import LeaveSerializer
-from rest_framework import generics, serializers, status
-from rest_framework.utils.urls import replace_query_param
+from .utils import send_leave_email, correct_grammar_and_paraphrase
 
 
-from django.db.models import Sum, Case, When, Value, FloatField, F, Q
-from django.db.models.functions import Coalesce
-from django.db.models.expressions import ExpressionWrapper
-from django.db.models import Func
-from datetime import date as date_cls, datetime, timedelta
-
-
-
+# -------------------------------------------------
+# Leave apply + approval-link redirection
+# -------------------------------------------------
 
 class LeaveRequestView(APIView):
     permission_classes = [IsAuthenticated]
@@ -73,26 +70,55 @@ class LeaveRequestView(APIView):
             return Response({
                 "message": "Leave request submitted successfully",
                 "data": LeaveSerializer(leave, context={'request': request}).data
-            }, status=status.HTTP_201_CREATED)
+            }, status=201)
 
         print("❌ Serializer errors:", serializer.errors)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=400)
 
 
 class LeaveApprovalView(APIView):
-    permission_classes = [AllowAny]  # ✅ Still allow public access from email
+    permission_classes = [AllowAny]  # ✅ allow public access from email
 
     def get(self, request, pk):
         """
         Redirect to frontend leave review page (no approval/rejection here).
         """
         action = request.GET.get("action")
-        leave = get_object_or_404(Leave, pk=pk)
-
-        # Redirect to frontend review page
+        leave = Leave.objects.filter(pk=pk).first()
+        if not leave:
+            raise Http404("Leave not found.")
         frontend_url = f"https://atpldhaka.com/leave-review/{leave.id}?action={action}"
         return redirect(frontend_url)
 
+
+# -------------------------------------------------
+# Optional model resolver (kept if you later need it)
+# -------------------------------------------------
+
+def _get_member_model():
+    """
+    Resolve the Member model from another app safely.
+    Priority:
+      1) settings.MEMBER_MODEL = "app_label.ModelName"  (e.g., "assign.Member")
+      2) fallback common guesses: ("assign", "Member"), ("members", "Member")
+    """
+    model_path = getattr(settings, "MEMBER_MODEL", None)
+    if model_path and "." in model_path:
+        app_label, model_name = model_path.rsplit(".", 1)
+        Model = apps.get_model(app_label, model_name)
+        if Model is not None:
+            return Model
+
+    for app_label in ("assign", "members"):
+        Model = apps.get_model(app_label, "Member")
+        if Model is not None:
+            return Model
+    return None
+
+
+# -------------------------------------------------
+# Decision: approve/reject (sends requester + team emails)
+# -------------------------------------------------
 
 class LeaveDecisionView(APIView):
     permission_classes = [IsAuthenticated]
@@ -110,7 +136,7 @@ class LeaveDecisionView(APIView):
         row = (Leave.objects
                .filter(pk=pk)
                .values("id", "leave_type", "reason", "status", "is_approved",
-                       "user_id", "email_body", "informed_status", "date", "created_at")  # ⬅️ include created_at
+                       "user_id", "email_body", "informed_status", "date", "created_at")
                .first())
         if not row:
             raise Http404("Leave not found.")
@@ -139,7 +165,6 @@ class LeaveDecisionView(APIView):
                 # If created at least 3 full days before the (earliest) leave date => informed
                 informed_status_value = "informed" if (earliest_leave_date - created_date).days >= 3 else "uninformed"
             except Exception:
-                # if parsing fails, fall back to uninformed on approval
                 informed_status_value = "uninformed"
 
         # Atomic update without loading full model instance
@@ -208,18 +233,66 @@ class LeaveDecisionView(APIView):
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 
+        # -------- Team notification to Member list on APPROVAL (pivot or M2M) --------
+        if new_status == "approved":
+            try:
+                # Preferred: use the M2M reverse relation (Member.users through MemberAssignment)
+                team_emails = list(
+                    user.members
+                        .values_list("email", flat=True)
+                        .exclude(email__isnull=True)
+                        .exclude(email="")
+                        .distinct()
+                )
+
+                # Fallback via explicit model resolution if needed
+                if not team_emails:
+                    Member = _get_member_model()
+                    if Member:
+                        team_emails = list(
+                            Member.objects
+                                .filter(user_assignments__user_id=row["user_id"])
+                                .values_list("email", flat=True)
+                                .exclude(email__isnull=True)
+                                .exclude(email="")
+                                .distinct()
+                        )
+
+                if team_emails:
+                    display_name = (user.get_full_name() or user.username)
+                    team_subject = f"Team Notice: {display_name}'s leave ({leave_ns.get_leave_type_display})"
+
+                    team_ctx = {
+                        "display_name": display_name,
+                        "leave": leave_ns,
+                        "dates": date_list,                                   # normalized list
+                        "reason": corrected_reason or row.get("reason", ""),  # corrected if present
+                    }
+                    team_body = render_to_string("leave/team_leave_notice.html", team_ctx)
+
+                    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+                    team_msg = EmailMessage(
+                        team_subject,
+                        team_body,
+                        from_email=from_email,
+                        to=team_emails  # send directly to all members
+                    )
+                    team_msg.content_subtype = "html"
+                    team_msg.send()
+                else:
+                    print(f"ℹ️ No member emails found for user {user.id}; team notice skipped.")
+            except Exception as e:
+                print(f"❌ Team notification failed: {e}")
+
         return Response({
             "message": f"Leave has been {new_status}.",
-            "informed_status": leave_ns.informed_status  # handy to see what got saved
+            "informed_status": leave_ns.informed_status
         }, status=200)
 
 
-
-
-
-# ---------------------------
-# helpers kept inside views.py
-# ---------------------------
+# -------------------------------------------------
+# Helpers kept inside views.py
+# -------------------------------------------------
 
 def resolve_user_ids_from_emp_code(emp_code: str):
     """
@@ -278,11 +351,13 @@ def parse_bool(val):
         return None
     return str(val).strip().lower() in ("1", "true", "t", "yes", "y")
 
+
 def parse_int(val):
     try:
         return int(str(val).strip())
     except Exception:
         return None
+
 
 ALLOWED_ORDER_FIELDS = {
     'id', 'leave_type', 'reason', 'status', 'is_approved',
@@ -327,9 +402,10 @@ class AmpecPagination(PageNumberPagination):
             "results": data
         })
 
-# ---------------------------
-# Inline list serializer
-# ---------------------------
+
+# -------------------------------------------------
+# Inline list serializer + list view
+# -------------------------------------------------
 
 class LeaveListSerializer(serializers.ModelSerializer):
     user = serializers.SerializerMethodField()
@@ -356,10 +432,11 @@ class LeaveListSerializer(serializers.ModelSerializer):
     def get_leave_type_display(self, obj):
         return obj.get_leave_type_display()
 
+
 class LeaveListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = LeaveListSerializer
-    pagination_class = AmpecPagination 
+    pagination_class = AmpecPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -367,20 +444,16 @@ class LeaveListView(generics.ListAPIView):
         qs = Leave.objects.select_related('user').all()
 
         # -------- Access control + base filtering by USER ID --------
-        # ?id=<USER_ID>  (admin can see any; others only themselves)
         user_id_param = qp.get('id')
         uid = parse_int(user_id_param) if user_id_param else None
 
         if user.username == 'frahman':
-            # Admin: if id provided, filter to that user; else all
             if uid is not None:
                 qs = qs.filter(user_id=uid)
         else:
-            # Non-admin: always restrict to own user_id
             qs = qs.filter(user_id=user.id)
 
         # -------- Additional filters (columns) --------
-        # Specific Leave row: use ?leave_id=<LEAVE_ID>
         leave_id = qp.get('leave_id')
         if leave_id is not None:
             lid = parse_int(leave_id)
@@ -460,7 +533,11 @@ class LeaveListView(generics.ListAPIView):
         if order_by.lstrip('-') not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
         return qs.order_by(order_by)
-    
+
+
+# -------------------------------------------------
+# Summary & manual create
+# -------------------------------------------------
 
 class LeaveUserSummaryView(APIView):
     """
@@ -468,11 +545,7 @@ class LeaveUserSummaryView(APIView):
       - total_leave (period-aware)
       - informed_leave (period-aware)
       - uninformed_leave (period-aware)
-      - monthly_breakdown (ALWAYS whole requested year):
-          [
-            {"month":"January","leave":X,"informed_leave":Y,"uninformed_leave":Z},
-            ...
-          ]
+      - monthly_breakdown (ALWAYS whole requested year)
       - details (optional, period-aware)
     """
     permission_classes = [IsAuthenticated]
@@ -534,24 +607,24 @@ class LeaveUserSummaryView(APIView):
 
         # ---- accumulators ----
         totals              = {uid: 0.0 for uid in user_ids}  # period-aware
-        informed_totals     = {uid: 0.0 for uid in user_ids}  # period-aware
-        uninformed_totals   = {uid: 0.0 for uid in user_ids}  # period-aware
+        informed_totals     = {uid: 0.0 for uid in user_ids}
+        uninformed_totals   = {uid: 0.0 for uid in user_ids}
 
         monthly_leave       = {uid: [0.0]*12 for uid in user_ids}  # whole year
-        monthly_informed    = {uid: [0.0]*12 for uid in user_ids}  # whole year
-        monthly_uninformed  = {uid: [0.0]*12 for uid in user_ids}  # whole year
+        monthly_informed    = {uid: [0.0]*12 for uid in user_ids}
+        monthly_uninformed  = {uid: [0.0]*12 for uid in user_ids}
 
         details_map = {uid: [] for uid in user_ids} if want_details else None
 
         # ---- iterate all leaves ----
-        for row in leaves:
-            uid = row['user_id']
-            leave_type = row['leave_type']
-            reason = row['reason']
-            inf_status = (row.get('informed_status') or '').lower()
+        for r in leaves:
+            uid = r['user_id']
+            leave_type = r['leave_type']
+            reason = r['reason']
+            inf_status = (r.get('informed_status') or '').lower()
             is_informed = (inf_status == 'informed')
 
-            dates = row.get('date') or []
+            dates = r.get('date') or []
             if isinstance(dates, str):
                 dates = [dates]
 
@@ -631,8 +704,6 @@ class LeaveUserSummaryView(APIView):
             results.append(payload)
 
         return Response({"results": results}, status=200)
-
-
 
 
 # ---- Serializer for manual creation (inline) ----
@@ -715,7 +786,6 @@ class ManualLeaveCreateView(APIView):
         informed = data.get('informed_status')
         if not informed:
             try:
-                from datetime import date as date_cls
                 earliest = min(date_cls.fromisoformat(d) for d in dates)
                 created = timezone.localdate()  # today's date in server timezone
                 informed = 'informed' if (earliest - created).days >= 3 else 'uninformed'

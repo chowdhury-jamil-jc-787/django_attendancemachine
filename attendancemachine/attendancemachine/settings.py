@@ -207,3 +207,7 @@ EMAIL_USE_TLS = False  # ❌ TLS is for port 587 only
 EMAIL_HOST_USER = 'leave@atpldhaka.com'
 EMAIL_HOST_PASSWORD = '4sWCaYwzFgL1_dOu'  # ✅ Use a secure password or environment variable
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+
+MEMBER_MODEL = "assign.Member"
+MEMBER_ASSIGNMENT_MODEL = "assign.MemberAssignment"
