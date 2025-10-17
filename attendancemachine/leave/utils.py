@@ -60,7 +60,7 @@ def send_leave_email(user, leave, corrected_reason, approve_url=None, reject_url
     body = render_to_string("leave/leave_email.html", context)
     print("🧾 Rendered email body (truncated):", body[:200])
 
-    email = EmailMessage(subject, body, to=["jamil@ampec.com.au"])
+    email = EmailMessage(subject, body, to=["faisal@ampec.com.au"])
     email.content_subtype = "html"
 
     try:
