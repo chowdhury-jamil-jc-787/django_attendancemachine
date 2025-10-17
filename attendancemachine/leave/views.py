@@ -210,26 +210,28 @@ class LeaveDecisionView(APIView):
             get_leave_type_display=display_map.get(row["leave_type"], row["leave_type"]),
         )
 
-        # Notify requester
-        try:
-            context = {"user": user, "leave": leave_ns, "corrected_reason": corrected_reason}
-            subject = f"Your Leave Request Has Been {new_status.upper()}"
-            body = render_to_string("leave/leave_decision_email.html", context)
-            email = EmailMessage(subject, body, to=[user.email])
-            email.content_subtype = "html"
-            email.send()
-        except Exception as e:
-            print(f"❌ Failed to notify user: {str(e)}")
-
-        # Notify admin (optional)
+        # Notify admin (HTML template)
         try:
             display_name = (user.get_full_name() or user.username)
-            admin_email = EmailMessage(
-                subject=f"You have {action}ed a leave request",
-                body=f"You have {action}ed {display_name}'s leave request.",
-                to=["jamil@ampec.com.au"]
+            admin_ctx = {
+                "action": action,                 # "approve" / "reject"
+                "display_name": display_name,
+                "leave": leave_ns,
+                "reason": corrected_reason or row.get("reason", ""),
+            }
+            admin_subject = f"You have {action}ed a leave request"
+            admin_body = render_to_string("leave/admin_decision_email.html", admin_ctx)
+
+            from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+            admin_msg = EmailMessage(
+                admin_subject,
+                admin_body,
+                from_email=from_email,
+                to=["jamil@ampec.com.au"],        # change as needed
+                # cc=["..."], bcc=["..."], reply_to=["..."]  # optional
             )
-            admin_email.send()
+            admin_msg.content_subtype = "html"
+            admin_msg.send()
         except Exception as e:
             print(f"❌ Failed to notify admin: {str(e)}")
 

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <body style="font-family:Arial, sans-serif; line-height:1.6;">
+    <h2 style="margin:0 0 8px">You {{ action }} a leave request</h2>
+    <p><strong>{{ display_name }}</strong> — {{ leave.get_leave_type_display }}.</p>
+
+    {% if leave.date and leave.date|length == 1 %}
+      <p><strong>Date:</strong> {{ leave.date.0 }}</p>
+    {% elif leave.date and leave.date|length > 1 %}
+      <p><strong>Dates:</strong> {{ leave.date|join:", " }}</p>
+    {% endif %}
+
+    {% if reason %}
+      <p><strong>Reason:</strong> {{ reason }}</p>
+    {% endif %}
+
+    <hr style="border:none;border-top:1px solid #eee; margin:16px 0" />
+    <p style="font-size:12px;color:#777;">This is an automated notice.</p>
+  </body>
+</html>
