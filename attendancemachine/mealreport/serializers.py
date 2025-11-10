@@ -6,7 +6,9 @@ from .models import MealPayment
 User = get_user_model()
 
 
-# ---------- Payment Serializer ----------
+# ------------------------------------------------
+# 💳 Meal Payment Serializer
+# ------------------------------------------------
 class MealPaymentSerializer(serializers.ModelSerializer):
     paid_by_username = serializers.SerializerMethodField()
 
@@ -29,11 +31,13 @@ class MealPaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["paid_at"]
 
     def get_paid_by_username(self, obj):
-        """Return username of payer if available"""
+        """Return payer username if available"""
         return getattr(obj.paid_by, "username", None)
 
 
-# ---------- Daily Summary Serializer ----------
+# ------------------------------------------------
+# 📊 Daily Report Serializer (CookRecord + Payment)
+# ------------------------------------------------
 class DailyReportRowSerializer(serializers.Serializer):
     # --- Summary ---
     date = serializers.DateField()
@@ -56,36 +60,44 @@ class DailyReportRowSerializer(serializers.Serializer):
     payment_status = serializers.CharField(allow_null=True, required=False)
     transaction_id = serializers.CharField(allow_null=True, required=False)
 
-    # --- Optional details (for per-user info later if needed) ---
+    # --- Optional details (for future per-user info) ---
     ate_today = serializers.ListField(child=serializers.DictField(), required=False)
     did_not_eat = serializers.ListField(child=serializers.DictField(), required=False)
 
     @staticmethod
     def from_record(rec: CookRecord, payment: MealPayment = None, include_details: bool = False):
         """
-        Convert a CookRecord + optional MealPayment into serialized dict.
+        Convert CookRecord + optional MealPayment into serialized dict.
         """
+        # Defensive handling in case total_amount isn’t saved in CookRecord
+        total_amount = getattr(rec, "total_amount", None)
+        if not total_amount:
+            total_amount = (float(rec.price or 0) * int(rec.eaters_count or 0))
+
         base = {
+            # --- Meal Info ---
             "date": rec.date,
-            "meal_source": getattr(rec, "meal_source", "weekly"),
+            "meal_source": getattr(rec, "source", "weekly"),
             "item": rec.item,
             "price": float(rec.price or 0),
             "present_count": int(rec.present_count or 0),
             "on_leave_count": int(rec.on_leave_count or 0),
             "opt_out_count": int(getattr(rec, "opt_out_count", 0) or 0),
             "eaters_count": int(rec.eaters_count or 0),
-            "total_amount": float(getattr(rec, "total_amount", rec.price * rec.eaters_count if rec.eaters_count else 0)),
+            "total_amount": float(total_amount),
             "notes": rec.notes or "",
+
+            # --- Payment Info ---
             "paid": bool(payment and payment.status == "success"),
-            "payment_method": payment.method if payment else None,
-            "paid_amount": float(payment.amount) if payment else None,
+            "payment_method": getattr(payment, "method", None) if payment else None,
+            "paid_amount": float(getattr(payment, "amount", 0)) if payment else None,
             "paid_by": getattr(payment.paid_by, "username", None) if payment else None,
             "paid_at": getattr(payment, "paid_at", None) if payment else None,
             "payment_status": getattr(payment, "status", None) if payment else None,
             "transaction_id": getattr(payment, "transaction_id", None) if payment else None,
         }
 
-        # --- Optional details (currently no attendance; placeholder) ---
+        # Optional fields for details (placeholder)
         if include_details:
             base["ate_today"] = []
             base["did_not_eat"] = []
