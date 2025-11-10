@@ -46,6 +46,11 @@ urlpatterns = [
     path("api/", include("meal.urls")), # Include meal app routes
 
     path('api/assign/', include('member.urls')),
+
+    path('api/mealreport/', include('mealreport.urls')),
+
+    path("api/bkash/", include("bkashgateway.urls")),
+
 ]
 
 

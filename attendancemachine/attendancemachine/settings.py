@@ -66,6 +66,8 @@ INSTALLED_APPS = [
     'leave',
     'meal',
     'member',
+    'mealreport',
+    'bkashgateway',
 ]
 
 MIDDLEWARE = [
