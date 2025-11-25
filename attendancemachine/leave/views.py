@@ -28,6 +28,7 @@ from django.shortcuts import redirect
 from .models import Leave
 from .serializers import LeaveSerializer
 from .utils import send_leave_email, correct_grammar_and_paraphrase
+from datetime import date, timedelta
 
 
 from member.models import MemberAssignment
@@ -811,6 +812,12 @@ class ManualLeaveCreateView(APIView):
 
 
 
+
+
+
+
+
+
 class TeamApprovedLeaveView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -914,4 +921,132 @@ class TeamApprovedLeaveView(APIView):
         return Response({
             "pagination": pagination,
             "results": results
+        })
+    
+
+
+
+
+
+
+class LeaveCalendarView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # -----------------------------------------
+        # 1) AUTO-DETECT MONTH IF NOT PROVIDED
+        # -----------------------------------------
+        month_str = request.query_params.get("month")
+
+        if not month_str:
+            # Server auto syncs time with internet time via NTP
+            today = date.today()
+            month_str = today.strftime("%Y-%m")  # example: "2025-02"
+
+        # Validate month format
+        try:
+            year, month = map(int, month_str.split("-"))
+            first_day = date(year, month, 1)
+        except Exception:
+            return Response({"error": "Invalid month format. Use YYYY-MM"}, status=400)
+
+        # Calculate last day of the month
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+        last_day = next_month - timedelta(days=1)
+
+        # -----------------------------------------
+        # 2) DETERMINE VISIBLE USERS
+        # -----------------------------------------
+
+        # Admin → see all approved leaves
+        if user.username == "frahman":
+            visible_user_ids = list(
+                User.objects.exclude(profile__emp_code="00")
+                .values_list("id", flat=True)
+            )
+
+        else:
+            # Normal user → see ONLY team members + self
+            team_user_ids = list(
+                User.objects.filter(
+                    member_assignments__member__user_assignments__user=user
+                )
+                .exclude(profile__emp_code="00")
+                .distinct()
+                .values_list("id", flat=True)
+            )
+
+            visible_user_ids = set(team_user_ids)
+            visible_user_ids.add(user.id)  # include self
+
+        # -----------------------------------------
+        # 3) FETCH APPROVED LEAVES
+        # -----------------------------------------
+
+        leaves = Leave.objects.filter(
+            status="approved",
+            user_id__in=visible_user_ids
+        )
+
+        # Filter by month manually because dates[] inside JSONField
+        filtered = []
+        for lv in leaves:
+            for d in lv.date:
+                try:
+                    d_date = date.fromisoformat(d)
+                except:
+                    continue
+                if first_day <= d_date <= last_day:
+                    filtered.append((lv, d_date))
+
+        # -----------------------------------------
+        # 4) BUILD FULL MONTH CALENDAR
+        # -----------------------------------------
+
+        days = []
+        current = first_day
+
+        while current <= last_day:
+            days.append({
+                "date": current.isoformat(),
+                "leaves": []
+            })
+            current += timedelta(days=1)
+
+        # Fast lookup map
+        index_map = {d["date"]: d for d in days}
+
+        # -----------------------------------------
+        # 5) FILL LEAVES INTO CALENDAR DAYS
+        # -----------------------------------------
+
+        for lv, d_date in filtered:
+            u = lv.user
+            profile = getattr(u, "profile", None)
+            emp_code = getattr(profile, "emp_code", None)
+
+            entry = {
+                "user_id": u.id,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "emp_code": emp_code,
+                "leave_type": lv.leave_type,           # full_day / 1st_half / 2nd_half
+                "reason": lv.reason,
+                "informed_status": lv.informed_status,
+            }
+
+            index_map[d_date.isoformat()]["leaves"].append(entry)
+
+        # -----------------------------------------
+        # 6) RETURN FINAL RESPONSE
+        # -----------------------------------------
+
+        return Response({
+            "month": month_str,
+            "days": days
         })

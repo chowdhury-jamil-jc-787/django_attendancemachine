@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import LeaveRequestView, LeaveApprovalView, LeaveDecisionView, LeaveListView, LeaveUserSummaryView, ManualLeaveCreateView, TeamApprovedLeaveView
+from .views import LeaveRequestView, LeaveApprovalView, LeaveDecisionView, LeaveListView, LeaveUserSummaryView, ManualLeaveCreateView, TeamApprovedLeaveView, LeaveCalendarView
 
 urlpatterns = [
     path('apply/', LeaveRequestView.as_view(), name='leave-apply'),
@@ -9,4 +9,5 @@ urlpatterns = [
     path('summary/', LeaveUserSummaryView.as_view(), name='leave-summary'),
     path('manual/', ManualLeaveCreateView.as_view(), name='leave-manual-create'),
     path('team-approved/', TeamApprovedLeaveView.as_view(), name='team-approved'),
+    path('calendar/', LeaveCalendarView.as_view(), name='leave-calendar'),
 ]
