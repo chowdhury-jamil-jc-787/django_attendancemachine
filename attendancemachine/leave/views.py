@@ -30,6 +30,10 @@ from .serializers import LeaveSerializer
 from .utils import send_leave_email, correct_grammar_and_paraphrase
 
 
+from member.models import MemberAssignment
+from urllib.parse import urlencode
+User = get_user_model()
+
 # -------------------------------------------------
 # Leave apply + approval-link redirection
 # -------------------------------------------------
@@ -803,3 +807,111 @@ class ManualLeaveCreateView(APIView):
                 "created_at": leave.created_at,
             }
         }, status=201)
+
+
+
+
+class TeamApprovedLeaveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        qp = request.query_params
+
+        page = int(qp.get("page", 1))
+        per_page = int(qp.get("per_page", 15))
+        offset = (page - 1) * per_page
+
+        # ---------------------------------------------------
+        # 1) admin → see all approved leaves
+        # ---------------------------------------------------
+        if user.username == "frahman":
+            qs = Leave.objects.filter(status="approved")
+
+        else:
+            # ---------------------------------------------------
+            # 2) normal user → only team members' approved leaves
+            # ---------------------------------------------------
+            team_user_ids = list(
+                User.objects.filter(
+                    member_assignments__member__user_assignments__user=user
+                )
+                .exclude(id=user.id)          # exclude self
+                .exclude(profile__emp_code="00")
+                .values_list("id", flat=True)
+                .distinct()
+            )
+
+            qs = Leave.objects.filter(
+                status="approved",
+                user_id__in=team_user_ids
+            )
+
+        # optional filters
+        start_date = qp.get("start_date")
+        end_date = qp.get("end_date")
+
+        if start_date:
+            qs = qs.filter(date__contains=[start_date])
+        if end_date:
+            qs = qs.filter(date__contains=[end_date])
+
+        # count for pagination
+        total = qs.count()
+
+        # pagination slice
+        rows = qs.order_by("-created_at")[offset: offset + per_page]
+
+        # ---------------------------------------------------
+        # build result list manually
+        # ---------------------------------------------------
+        results = []
+        for row in rows:
+            u = row.user
+            profile = getattr(u, "profile", None)
+            emp_code = getattr(profile, "emp_code", None)
+            profile_img = profile.profile_img.url if profile and profile.profile_img else None
+
+            results.append({
+                "id": row.id,
+                "emp_code": emp_code,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "email": u.email,
+                "leave_type": row.leave_type,
+                "reason": row.reason,
+                "date": row.date,
+                "status": row.status,
+                "informed_status": row.informed_status,
+                "is_approved": row.is_approved,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "profile_img": profile_img,
+            })
+
+        # ---------------------------------------------------
+        # pagination URLs
+        # ---------------------------------------------------
+        base_url = request.build_absolute_uri(request.path)
+        params = qp.dict()
+        params["per_page"] = per_page
+
+        def url_for(p):
+            params["page"] = p
+            return f"{base_url}?{urlencode(params)}"
+
+        last_page = (total + per_page - 1) // per_page
+
+        pagination = {
+            "total": total,
+            "per_page": per_page,
+            "current_page": page,
+            "last_page": last_page,
+            "next_page_url": url_for(page + 1) if page < last_page else None,
+            "prev_page_url": url_for(page - 1) if page > 1 else None,
+        }
+
+        return Response({
+            "pagination": pagination,
+            "results": results
+        })
