@@ -31,7 +31,8 @@ from .utils import send_leave_email, correct_grammar_and_paraphrase
 from datetime import date, timedelta
 
 
-from member.models import MemberAssignment
+from member.models import Member, MemberAssignment
+from django.contrib.auth.models import User
 from urllib.parse import urlencode
 User = get_user_model()
 
@@ -941,7 +942,6 @@ class LeaveCalendarView(APIView):
         month_str = request.query_params.get("month")
 
         if not month_str:
-            # Server auto syncs time with internet time via NTP
             today = date.today()
             month_str = today.strftime("%Y-%m")  # example: "2025-02"
 
@@ -954,10 +954,9 @@ class LeaveCalendarView(APIView):
 
         # Calculate last day of the month
         if month == 12:
-            next_month = date(year + 1, 1, 1)
+            last_day = date(year + 1, 1, 1) - timedelta(days=1)
         else:
-            next_month = date(year, month + 1, 1)
-        last_day = next_month - timedelta(days=1)
+            last_day = date(year, month + 1, 1) - timedelta(days=1)
 
         # -----------------------------------------
         # 2) DETERMINE VISIBLE USERS
@@ -971,18 +970,29 @@ class LeaveCalendarView(APIView):
             )
 
         else:
-            # Normal user → see ONLY team members + self
-            team_user_ids = list(
-                User.objects.filter(
-                    member_assignments__member__user_assignments__user=user
-                )
+            # Normal user → See team + self
+
+            # Step A: Find member_ids where this user is assigned
+            member_ids = list(
+                MemberAssignment.objects.filter(user=user)
+                .values_list("member_id", flat=True)
+            )
+
+            # Step B: Get member emails (safe Python list → avoids collation issue)
+            member_emails = list(
+                Member.objects.filter(id__in=member_ids)
+                .values_list("email", flat=True)
+            )
+
+            # Step C: Get User IDs who have these emails
+            employee_user_ids = list(
+                User.objects.filter(email__in=member_emails)
                 .exclude(profile__emp_code="00")
-                .distinct()
                 .values_list("id", flat=True)
             )
 
-            visible_user_ids = set(team_user_ids)
-            visible_user_ids.add(user.id)  # include self
+            visible_user_ids = set(employee_user_ids)
+            visible_user_ids.add(user.id)
 
         # -----------------------------------------
         # 3) FETCH APPROVED LEAVES
@@ -993,7 +1003,7 @@ class LeaveCalendarView(APIView):
             user_id__in=visible_user_ids
         )
 
-        # Filter by month manually because dates[] inside JSONField
+        # Filter rows by month because dates are inside JSONField
         filtered = []
         for lv in leaves:
             for d in lv.date:
@@ -1018,7 +1028,6 @@ class LeaveCalendarView(APIView):
             })
             current += timedelta(days=1)
 
-        # Fast lookup map
         index_map = {d["date"]: d for d in days}
 
         # -----------------------------------------
@@ -1035,7 +1044,7 @@ class LeaveCalendarView(APIView):
                 "first_name": u.first_name,
                 "last_name": u.last_name,
                 "emp_code": emp_code,
-                "leave_type": lv.leave_type,           # full_day / 1st_half / 2nd_half
+                "leave_type": lv.leave_type,
                 "reason": lv.reason,
                 "informed_status": lv.informed_status,
             }
