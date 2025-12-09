@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Leave Cancellation Processed</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#fafafa; padding:20px; }
+    .box {
+      max-width: 640px; margin:auto; background:#fff;
+      padding:25px; border:1px solid #eee; border-radius:8px;
+    }
+    h2 { margin-top:0; color:#2c3e50; }
+    ul { margin-left:20px; }
+    .footer { margin-top:20px; color:#777; font-size:13px; text-align:center; }
+  </style>
+</head>
+<body>
+<div class="box">
+
+  <h2>Your Leave Cancellation Was Processed</h2>
+
+  <p>Hello <strong>{{ user.get_full_name|default:user.username }}</strong>,</p>
+
+  <p>Your leave cancellation has been processed automatically.</p>
+
+  <p><strong>Cancelled Dates:</strong></p>
+  <ul>
+    {% for d in cancelled_dates %}
+      <li>{{ d }}</li>
+    {% endfor %}
+  </ul>
+
+  {% if remaining_dates %}
+    <p><strong>Remaining Approved Leave Dates:</strong></p>
+    <ul>
+      {% for d in remaining_dates %}
+        <li>{{ d }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>Your leave request is now fully cancelled.</p>
+  {% endif %}
+
+  <div class="footer">
+    This is an automated message from the Leave Management System.
+  </div>
+</div>
+</body>
+</html>

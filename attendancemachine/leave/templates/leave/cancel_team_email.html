@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Leave Cancellation Notice</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#f7f7f7; padding:20px; }
+    .box {
+      max-width: 640px; margin:auto; padding:25px;
+      background:#fff; border-radius:8px; border:1px solid #eee;
+    }
+    h2 { margin-top:0; color:#34495e; }
+    ul { margin-left:20px; }
+    .footer { margin-top:20px; font-size:12px; color:#888; text-align:center; }
+  </style>
+</head>
+<body>
+
+<div class="box">
+  <h2>Leave Cancellation Notice</h2>
+
+  <p>Hello Team,</p>
+
+  <p>
+    Please be informed that
+    <strong>{{ user.get_full_name|default:user.username }}</strong>
+    {% if emp_code %}(Employee Code: {{ emp_code }}){% endif %}
+    has cancelled the following leave date(s):
+  </p>
+
+  <ul>
+    {% for d in cancelled_dates %}
+      <li>{{ d }}</li>
+    {% endfor %}
+  </ul>
+
+  {% if remaining_dates %}
+    <p>The following leave dates remain approved:</p>
+    <ul>
+      {% for d in remaining_dates %}
+        <li>{{ d }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>
+      The leave has been fully withdrawn.
+    </p>
+  {% endif %}
+
+  <p>Please adjust your planning accordingly.</p>
+
+  <div class="footer">
+    Automated message — Leave Management System.
+  </div>
+</div>
+
+</body>
+</html>

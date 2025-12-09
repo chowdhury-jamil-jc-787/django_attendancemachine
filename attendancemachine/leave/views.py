@@ -225,7 +225,7 @@ class LeaveDecisionView(APIView):
             admin_subject = f"You have {action}ed a leave request"
             admin_body = render_to_string("leave/admin_decision_email.html", admin_ctx)
             from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
-            admin_msg = EmailMessage(admin_subject, admin_body, from_email=from_email, to=["faisal@ampec.com.au"])
+            admin_msg = EmailMessage(admin_subject, admin_body, from_email=from_email, to=["jamil@ampec.com.au"])
             admin_msg.content_subtype = "html"
             admin_msg.send()
         except Exception as e:
@@ -809,6 +809,73 @@ class ManualLeaveCreateView(APIView):
                 "created_at": leave.created_at,
             }
         }, status=201)
+    
+
+
+
+class UpcomingLeaveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        today = timezone.localdate()
+
+        # ---------------------------------------------------
+        # Admin → all users
+        # Normal → only self
+        # ---------------------------------------------------
+        if user.username == "frahman":
+            qs = Leave.objects.filter(status="approved")
+        else:
+            qs = Leave.objects.filter(status="approved", user_id=user.id)
+
+        upcoming_list = []
+
+        for lv in qs.select_related("user"):
+            raw_dates = lv.date or []
+
+            # Normalize to list always
+            if isinstance(raw_dates, str):
+                date_list = [raw_dates]
+            else:
+                date_list = raw_dates
+
+            # Filter dates >= today
+            upcoming_dates = []
+            for d in date_list:
+                try:
+                    d_date = date_cls.fromisoformat(d)
+                    if d_date >= today:
+                        upcoming_dates.append(d)
+                except Exception:
+                    continue
+
+            # Skip if no upcoming dates
+            if not upcoming_dates:
+                continue
+
+            u = lv.user
+            profile = getattr(u, "profile", None)
+            emp_code = getattr(profile, "emp_code", None)
+
+            upcoming_list.append({
+                "id": lv.id,
+                "user_id": u.id,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "email": u.email,
+                "emp_code": emp_code,
+                "leave_type": lv.leave_type,
+                "dates": upcoming_dates,
+                "reason": lv.reason,
+                "informed_status": lv.informed_status,
+                "created_at": lv.created_at,
+            })
+
+        # Sort by date ascending (first upcoming date)
+        upcoming_list.sort(key=lambda x: x["dates"][0])
+
+        return Response({"upcoming": upcoming_list}, status=200)
 
 
 
@@ -1059,3 +1126,371 @@ class LeaveCalendarView(APIView):
             "month": month_str,
             "days": days
         })
+    
+
+
+
+
+
+
+
+
+# -------------------------------------------------
+class LeaveCancelRequestView(APIView):
+    """
+    User requests cancellation (partial or full) of an approved leave.
+    System automatically approves cancellation if:
+      - Leave is approved
+      - Requested dates belong to the leave
+      - Every date is at least 2 days ahead
+    Sends:
+      - HTML email to the user
+      - HTML email to teammates
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        user = request.user
+        today = timezone.localdate()
+
+        # -----------------------------
+        # 1) Must be own approved leave
+        # -----------------------------
+        try:
+            leave = Leave.objects.get(pk=pk, user=user, status="approved")
+        except Leave.DoesNotExist:
+            return Response(
+                {"error": "Leave not found or not approved for this user."},
+                status=404
+            )
+
+        # -----------------------------
+        # 2) Get and validate dates
+        # -----------------------------
+        dates = request.data.get("dates")
+        if not dates:
+            return Response({"error": "dates is required."}, status=400)
+
+        if isinstance(dates, str):
+            dates = [dates]
+
+        requested = []
+        for d in dates:
+            try:
+                dt = date_cls.fromisoformat(d)
+            except:
+                return Response({"error": f"Invalid date: {d}"}, status=400)
+
+            # ❌ Must be ≥ 2 days before leave date
+            if (dt - today).days < 2:
+                return Response(
+                    {"error": f"Cannot cancel {d}. Minimum 2 days before required."},
+                    status=400
+                )
+
+            requested.append(dt.isoformat())
+
+        existing = set(leave.date or [])
+        invalid = [d for d in requested if d not in existing]
+
+        if invalid:
+            return Response(
+                {"error": f"These dates are not part of the leave: {', '.join(invalid)}"},
+                status=400
+            )
+
+        # --------------------------------------
+        # 3) Auto-cancel — update leave safely
+        # --------------------------------------
+        remaining = [d for d in leave.date if d not in requested]
+
+        if remaining:
+            # Partial cancel → approved leave stays valid
+            leave.date = remaining
+            leave.status = "approved"
+            leave.is_approved = True
+            leave.save(update_fields=["date", "status", "is_approved", "updated_at"])
+
+        else:
+            # FULL cancellation → mark cancelled (BUT bypass clean() date rule)
+            Leave.objects.filter(pk=leave.id).update(
+                date=[], status="cancelled", is_approved=False, updated_at=timezone.now()
+            )
+            leave.refresh_from_db()
+
+        # --------------------------------------
+        # 4) SEND EMAIL — USER
+        # --------------------------------------
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+        profile = getattr(user, "profile", None)
+        emp_code = getattr(profile, "emp_code", "-")
+
+        user_body = render_to_string("leave/cancel_user_email.html", {
+            "user": user,
+            "leave": leave,
+            "cancelled_dates": requested,
+            "remaining_dates": remaining,
+        })
+
+        msg_user = EmailMessage(
+            "Your Leave Cancellation Has Been Processed",
+            user_body,
+            from_email,
+            [user.email],
+        )
+        msg_user.content_subtype = "html"
+        msg_user.send()
+
+        # --------------------------------------
+        # 5) SEND EMAIL — TEAM MEMBERS
+        # --------------------------------------
+        try:
+            team_emails = list(
+                user.members.values_list("email", flat=True)
+                    .exclude(email__isnull=True)
+                    .exclude(email="")
+                    .distinct()
+            )
+
+            if not team_emails:
+                Member = _get_member_model()
+                if Member:
+                    team_emails = list(
+                        Member.objects.filter(user_assignments__user_id=user.id)
+                            .values_list("email", flat=True)
+                            .exclude(email__isnull=True)
+                            .exclude(email="")
+                            .distinct()
+                    )
+
+            if team_emails:
+                team_body = render_to_string("leave/cancel_team_email.html", {
+                    "user": user,
+                    "leave": leave,
+                    "emp_code": emp_code,
+                    "cancelled_dates": requested,
+                    "remaining_dates": remaining,
+                })
+
+                msg_team = EmailMessage(
+                    f"Leave Cancellation Notice – {user.get_full_name() or user.username}",
+                    team_body,
+                    from_email,
+                    team_emails,
+                )
+                msg_team.content_subtype = "html"
+                msg_team.send()
+
+        except Exception as e:
+            print("Team email failed:", e)
+
+        # --------------------------------------
+        # 6) API RESPONSE
+        # --------------------------------------
+        return Response({
+            "message": "Leave cancellation processed automatically.",
+            "cancelled_dates": requested,
+            "remaining_dates": remaining,
+            "status": leave.status,
+        }, status=200)
+# -------------------------------------------------
+
+
+
+
+
+
+
+
+
+#-------------------------------------------------
+class AdminFutureLeaveCancelView(APIView):
+    """
+    Admin-only (frahman) endpoint to cancel upcoming leave dates.
+
+    Behaviour:
+      - Only user 'frahman' can call this.
+      - If request.body has "dates": only those dates are cancelled
+        (must be today or future AND part of the leave).
+      - If no "dates" provided: all today+future dates are cancelled.
+      - Past dates can NEVER be cancelled by this endpoint.
+      - If no dates remain after cancellation -> status='cancelled'.
+      - User + team receive HTML email notifications.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        # 1) Only frahman can use this endpoint
+        if request.user.username != "frahman":
+            return Response({"error": "You are not authorized to perform this action."}, status=403)
+
+        today = timezone.localdate()
+
+        # 2) Load leave (typically approved)
+        try:
+            leave = Leave.objects.select_related("user").get(pk=pk)
+        except Leave.DoesNotExist:
+            return Response({"error": "Leave not found."}, status=404)
+
+        if leave.status != "approved":
+            return Response(
+                {"error": f"Only approved leaves can be cancelled by admin (current status: {leave.status})."},
+                status=400
+            )
+
+        original_dates = leave.date or []
+        if isinstance(original_dates, str):
+            original_dates = [original_dates]
+
+        # ----------------------------------------------------
+        # 3) Determine which dates to cancel
+        # ----------------------------------------------------
+        body_dates = request.data.get("dates")
+
+        cancelled_dates: list[str] = []
+        remaining_dates: list[str] = []
+
+        # Helper: normalize & validate one date string
+        def norm_future_date(d_str: str) -> str:
+            try:
+                dt = date_cls.fromisoformat(str(d_str))
+            except Exception:
+                raise ValidationError(f"Invalid date format: {d_str}. Use YYYY-MM-DD.")
+            if dt < today:
+                raise ValidationError(f"Cannot cancel past date: {dt.isoformat()}.")
+            return dt.isoformat()
+
+        if body_dates:
+            # ---- CASE A: Admin specified exact dates in body ----
+            if isinstance(body_dates, str):
+                body_dates = [body_dates]
+            if not isinstance(body_dates, list):
+                return Response({"error": "dates must be a list of YYYY-MM-DD strings."}, status=400)
+
+            requested_norm = []
+            try:
+                for d in body_dates:
+                    requested_norm.append(norm_future_date(d))
+            except ValidationError as e:
+                return Response({"error": str(e)}, status=400)
+
+            original_set = set(original_dates)
+            invalid = [d for d in requested_norm if d not in original_set]
+            if invalid:
+                return Response(
+                    {"error": f"These dates are not part of this leave: {', '.join(invalid)}"},
+                    status=400
+                )
+
+            cancelled_dates = requested_norm
+            remaining_dates = [d for d in original_dates if d not in cancelled_dates]
+
+        else:
+            # ---- CASE B: No body -> cancel ALL today+future dates ----
+            for d in original_dates:
+                try:
+                    dt = date_cls.fromisoformat(str(d))
+                except Exception:
+                    # skip invalid stored dates
+                    continue
+                if dt < today:
+                    remaining_dates.append(dt.isoformat())   # keep past
+                else:
+                    cancelled_dates.append(dt.isoformat())   # cancel today+future
+
+        if not cancelled_dates:
+            return Response(
+                {"error": "There are no matching today/future dates to cancel."},
+                status=400
+            )
+
+        # ----------------------------------------------------
+        # 4) Update leave
+        # ----------------------------------------------------
+        if remaining_dates:
+            leave.date = remaining_dates
+            leave.status = "approved"
+            leave.is_approved = True
+            leave.save(update_fields=["date", "status", "is_approved", "updated_at"])
+        else:
+            # No dates left -> fully cancelled
+            leave.date = []
+            leave.status = "cancelled"
+            leave.is_approved = False
+            leave.save(update_fields=["date", "status", "is_approved", "updated_at"])
+
+        # ----------------------------------------------------
+        # 5) Email notifications
+        # ----------------------------------------------------
+        user = leave.user
+        profile = getattr(user, "profile", None)
+        emp_code = getattr(profile, "emp_code", None)
+        from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
+
+        # --- User email (HTML) ---
+        user_ctx = {
+            "user": user,
+            "leave": leave,
+            "cancelled_dates": cancelled_dates,
+            "remaining_dates": remaining_dates,
+            "initiated_by": "admin",
+        }
+        user_html = render_to_string("leave/cancel_user_email.html", user_ctx)
+        msg_user = EmailMessage(
+            subject="Your leave has been updated by admin",
+            body=user_html,
+            from_email=from_email,
+            to=[user.email],
+        )
+        msg_user.content_subtype = "html"
+        msg_user.send()
+
+        # --- Team email (HTML) ---
+        try:
+            team_emails = list(
+                user.members.values_list("email", flat=True)
+                    .exclude(email__isnull=True)
+                    .exclude(email="")
+                    .distinct()
+            )
+            if not team_emails:
+                Member = _get_member_model()
+                if Member:
+                    team_emails = list(
+                        Member.objects.filter(user_assignments__user_id=user.id)
+                            .values_list("email", flat=True)
+                            .exclude(email__isnull=True)
+                            .exclude(email="")
+                            .distinct()
+                    )
+
+            if team_emails:
+                team_ctx = {
+                    "user": user,
+                    "leave": leave,
+                    "emp_code": emp_code,
+                    "cancelled_dates": cancelled_dates,
+                    "remaining_dates": remaining_dates,
+                    "initiated_by": "admin",
+                }
+                team_html = render_to_string("leave/cancel_team_email.html", team_ctx)
+                msg_team = EmailMessage(
+                    subject=f"Leave Cancellation Notice – {user.get_full_name() or user.username}",
+                    body=team_html,
+                    from_email=from_email,
+                    to=team_emails,
+                )
+                msg_team.content_subtype = "html"
+                msg_team.send()
+        except Exception as e:
+            print("Admin future-cancel: team email failed:", e)
+
+        # ----------------------------------------------------
+        # 6) Response
+        # ----------------------------------------------------
+        return Response({
+            "message": "Admin cancellation completed.",
+            "cancelled_dates": cancelled_dates,
+            "remaining_dates": remaining_dates,
+            "status": leave.status,
+        }, status=200)
