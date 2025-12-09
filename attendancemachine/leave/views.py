@@ -5,6 +5,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.sites.shortcuts import get_current_site
 from django.core.mail import EmailMessage
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.http import Http404
@@ -225,7 +226,7 @@ class LeaveDecisionView(APIView):
             admin_subject = f"You have {action}ed a leave request"
             admin_body = render_to_string("leave/admin_decision_email.html", admin_ctx)
             from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None)
-            admin_msg = EmailMessage(admin_subject, admin_body, from_email=from_email, to=["jamil@ampec.com.au"])
+            admin_msg = EmailMessage(admin_subject, admin_body, from_email=from_email, to=["faisal@ampec.com.au"])
             admin_msg.content_subtype = "html"
             admin_msg.send()
         except Exception as e:
