@@ -17,6 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from myapp.views import RegisterView, LoginView, DashboardView, LogoutView, ChangePasswordView
+from seatplan.views import SeatPlanView
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -50,6 +51,9 @@ urlpatterns = [
     path('api/mealreport/', include('mealreport.urls')),
 
     path("api/bkash/", include("bkashgateway.urls")),
+
+    path("seatplan/", include("seatplan.urls")),      # HTML
+    path("api/seatplan/", SeatPlanView.as_view()),  # optional (see note)
 
 ]
 
