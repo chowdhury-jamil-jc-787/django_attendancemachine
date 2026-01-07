@@ -276,7 +276,7 @@ class UserMembersView(ResponseMixin, APIView):
         return paginator.get_paginated_response({
             "success": True,
             "message": "Members for user fetched successfully.",
-            "assignments": MemberAssignmentSerializer(
+            "members": MemberAssignmentSerializer(
                 page, many=True
             ).data
         })
