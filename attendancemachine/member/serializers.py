@@ -4,6 +4,7 @@ from .models import Member, MemberAssignment
 
 User = get_user_model()
 
+
 class MemberSerializer(serializers.ModelSerializer):
     class Meta:
         model = Member
@@ -12,11 +13,36 @@ class MemberSerializer(serializers.ModelSerializer):
             'position': {'required': False, 'allow_blank': True}
         }
 
+
 class MemberAssignmentSerializer(serializers.ModelSerializer):
-    # optional: show some details
-    user_id = serializers.PrimaryKeyRelatedField(source='user', queryset=User.objects.all())
-    member_id = serializers.PrimaryKeyRelatedField(source='member', queryset=Member.objects.all())
+    # user is REQUIRED
+    user_id = serializers.PrimaryKeyRelatedField(
+        source='user',
+        queryset=User.objects.all()
+    )
+
+    # member is OPTIONAL (nullable)
+    member_id = serializers.PrimaryKeyRelatedField(
+        source='member',
+        queryset=Member.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
+    # sign_in is OPTIONAL (nullable)
+    sign_in_id = serializers.PrimaryKeyRelatedField(
+        source='sign_in',
+        queryset=Member.objects.all(),
+        required=False,
+        allow_null=True
+    )
 
     class Meta:
         model = MemberAssignment
-        fields = ['id', 'user_id', 'member_id', 'created_at']
+        fields = [
+            'id',
+            'user_id',
+            'member_id',
+            'sign_in_id',
+            'created_at'
+        ]
