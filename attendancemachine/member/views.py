@@ -311,7 +311,7 @@ class UsersMembersView(APIView):
                     "username": user.username,
                     "email": user.email,
                 },
-                "assignments": MemberAssignmentSerializer(
+                "members": MemberAssignmentSerializer(
                     user.member_assignments.all(),
                     many=True
                 ).data
