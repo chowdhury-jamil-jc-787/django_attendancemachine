@@ -104,10 +104,10 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     # }
     # =================================================
     @decorators.action(
-        detail=True,
-        methods=["post"],
-        url_path="assign-user",
-        permission_classes=[IsAuthenticated]
+    detail=True,
+    methods=["post"],
+    url_path="assign-user",
+    permission_classes=[IsAuthenticated]
     )
     def assign_user(self, request, pk=None):
         """
@@ -115,15 +115,9 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
 
         Body:
         {
-            "user_id": <optional>,
+            "user_id": <required>,
             "sign_in_id": <optional>
         }
-
-        RULES:
-        - user_id → ONLY from body (nullable)
-        - member_id → ONLY from URL
-        - sign_in_id → ONLY from body (nullable)
-        - NO token usage
         """
 
         # =========================
@@ -132,16 +126,16 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         member = self.get_object()
 
         # =========================
-        # user_id (OPTIONAL)
+        # user_id (MANDATORY)
         # =========================
-        user = None
         user_id = request.data.get("user_id")
+        if not user_id:
+            return self.fail("user_id is required.", status.HTTP_400_BAD_REQUEST)
 
-        if user_id not in (None, "", "null"):
-            try:
-                user = User.objects.get(pk=int(user_id))
-            except (User.DoesNotExist, ValueError, TypeError):
-                return self.fail("Invalid user_id.", status.HTTP_404_NOT_FOUND)
+        try:
+            user = User.objects.get(pk=int(user_id))
+        except (User.DoesNotExist, ValueError, TypeError):
+            return self.fail("Invalid user_id.", status.HTTP_404_NOT_FOUND)
 
         # =========================
         # sign_in_id (OPTIONAL)
@@ -158,25 +152,25 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         # =========================
         # DUPLICATE CHECK
         # =========================
-        exists = MemberAssignment.objects.filter(
+        existing = MemberAssignment.objects.filter(
             user=user,
             member=member,
             sign_in=sign_in
         ).first()
 
-        if exists:
+        if existing:
             return self.ok(
                 "Already assigned.",
-                {"assignment": MemberAssignmentSerializer(exists).data}
+                {"assignment": MemberAssignmentSerializer(existing).data}
             )
 
         # =========================
         # CREATE
         # =========================
         assignment = MemberAssignment.objects.create(
-            user=user,       # ✅ NULL allowed
+            user=user,
             member=member,
-            sign_in=sign_in  # ✅ NULL allowed
+            sign_in=sign_in
         )
 
         return self.ok(
