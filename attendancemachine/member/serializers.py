@@ -16,12 +16,14 @@ class MemberSerializer(serializers.ModelSerializer):
 
 class MemberAssignmentSerializer(serializers.ModelSerializer):
     # ======================
-    # WRITE FIELDS (IDs)
+    # WRITE FIELDS (OPTIONAL)
     # ======================
 
     user_id = serializers.PrimaryKeyRelatedField(
         source='user',
-        queryset=User.objects.all()
+        queryset=User.objects.all(),
+        required=False,
+        allow_null=True
     )
 
     member_id = serializers.PrimaryKeyRelatedField(
@@ -39,7 +41,7 @@ class MemberAssignmentSerializer(serializers.ModelSerializer):
     )
 
     # ======================
-    # READ-ONLY FIELDS (NAMES)
+    # READ-ONLY FIELDS
     # ======================
 
     member_name = serializers.SerializerMethodField(read_only=True)
@@ -62,15 +64,33 @@ class MemberAssignmentSerializer(serializers.ModelSerializer):
         ]
 
     # ======================
-    # METHODS
+    # VALIDATION (CRITICAL)
+    # ======================
+
+    def validate(self, attrs):
+        member = attrs.get('member')
+        sign_in = attrs.get('sign_in')
+
+        # ❌ both provided
+        if member and sign_in:
+            raise serializers.ValidationError(
+                "Provide either member_id or sign_in_id, not both."
+            )
+
+        # ❌ none provided (on create)
+        if not member and not sign_in and self.instance is None:
+            raise serializers.ValidationError(
+                "Either member_id or sign_in_id is required."
+            )
+
+        return attrs
+
+    # ======================
+    # READ HELPERS
     # ======================
 
     def get_member_name(self, obj):
-        if obj.member:
-            return obj.member.name
-        return None
+        return obj.member.name if obj.member else None
 
     def get_sign_in_name(self, obj):
-        if obj.sign_in:
-            return obj.sign_in.name
-        return None
+        return obj.sign_in.name if obj.sign_in else None

@@ -104,16 +104,28 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     # }
     # =================================================
     @decorators.action(
-        detail=True,
-        methods=["post"],
-        url_path="assign-user",
-        permission_classes=[IsAuthenticated]
+    detail=True,
+    methods=["post"],
+    url_path="assign-user",
+    permission_classes=[IsAuthenticated]
     )
     def assign_user(self, request, pk=None):
-        # member from URL
+        """
+        pk = MEMBER ID from URL
+
+        Body:
+        {
+            "user_id": <required>,
+            "sign_in_id": <optional>
+        }
+
+        RULE:
+        - Team member and Sign-in MUST be separate rows
+        """
+
         member = self.get_object()
 
-        # ---- user_id from BODY (REQUIRED) ----
+        # ---------- user_id (REQUIRED) ----------
         user_id = request.data.get("user_id")
         if not user_id:
             return self.fail("user_id is required.", status.HTTP_400_BAD_REQUEST)
@@ -123,31 +135,40 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         except (User.DoesNotExist, ValueError, TypeError):
             return self.fail("user_id is invalid.", status.HTTP_404_NOT_FOUND)
 
-        # ---- sign_in optional ----
-        sign_in = None
+        # ---------- sign_in_id (OPTIONAL) ----------
         sign_in_id = request.data.get("sign_in_id")
 
+        # =================================================
+        # CASE 1: ASSIGN SIGN-IN (member MUST be NULL)
+        # =================================================
         if sign_in_id not in (None, "", "null"):
             try:
                 sign_in = Member.objects.get(pk=int(sign_in_id))
             except (Member.DoesNotExist, ValueError, TypeError):
                 return self.fail("sign_in_id is invalid.", status.HTTP_404_NOT_FOUND)
 
-        # ---- create assignment ----
-        try:
             assignment, created = MemberAssignment.objects.get_or_create(
                 user=user,
-                member=member,
-                sign_in=sign_in
-            )
-        except IntegrityError:
-            return self.fail(
-                "Assignment already exists or violates constraints.",
-                status.HTTP_409_CONFLICT
+                sign_in=sign_in,
+                member=None,   # 🔥 IMPORTANT
             )
 
+            return self.ok(
+                "Sign-in assigned successfully." if created else "Sign-in already assigned.",
+                {"assignment": MemberAssignmentSerializer(assignment).data}
+            )
+
+        # =================================================
+        # CASE 2: ASSIGN TEAM MEMBER (sign_in MUST be NULL)
+        # =================================================
+        assignment, created = MemberAssignment.objects.get_or_create(
+            user=user,
+            member=member,
+            sign_in=None,   # 🔥 IMPORTANT
+        )
+
         return self.ok(
-            "User assigned to member." if created else "User already assigned to member.",
+            "Member assigned successfully." if created else "Member already assigned.",
             {"assignment": MemberAssignmentSerializer(assignment).data}
         )
 
@@ -163,12 +184,11 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     @decorators.action(detail=True, methods=["post"], url_path="unassign-user")
     def unassign_user(self, request, pk=None):
         """
-        pk = assignment SERIAL ID (user_member.id)
+        pk = MemberAssignment ID
 
-        Body decides what to remove:
-        - user_id → clear user
-        - member_id → clear member
-        - sign_in_id → clear sign_in
+        RULE:
+        - Each assignment is ONE row
+        - Unassign = DELETE the row
         """
 
         try:
@@ -179,46 +199,12 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
                 status_code=status.HTTP_404_NOT_FOUND
             )
 
-        updated = False
-
-        if "user_id" in request.data:
-            assignment.user = None
-            updated = True
-
-        if "member_id" in request.data:
-            assignment.member = None
-            updated = True
-
-        if "sign_in_id" in request.data:
-            assignment.sign_in = None
-            updated = True
-
-        if not updated:
-            return self.fail(
-                "Provide user_id or member_id or sign_in_id to unassign.",
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-
-        # if everything is null → delete row
-        if assignment.user is None and assignment.member is None and assignment.sign_in is None:
-            assignment.delete()
-            return self.ok(
-                "Assignment fully removed.",
-                {"id": pk}
-            )
-
-        assignment.save()
+        assignment.delete()
 
         return self.ok(
-            "Assignment updated.",
-            {
-                "id": assignment.id,
-                "user_id": assignment.user_id,
-                "member_id": assignment.member_id,
-                "sign_in_id": assignment.sign_in_id,
-            }
+            "Assignment removed successfully.",
+            {"id": pk}
         )
-
 
 
     # =================================================
