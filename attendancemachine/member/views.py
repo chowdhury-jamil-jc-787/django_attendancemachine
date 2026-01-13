@@ -1,6 +1,6 @@
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 
 from rest_framework import viewsets, status, decorators
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -106,35 +106,45 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     @decorators.action(
     detail=True,
     methods=["post"],
-    url_path="assign-user",
+    url_path="assign-member",
     permission_classes=[IsAuthenticated]
     )
-    def assign_user(self, request, pk=None):
+    def assign_member(self, request, pk=None):
         """
-        pk = member_id (from URL)
+        pk = user_id (from URL)
 
         Body:
         {
-            "user_id": <required>,
+            "member_id": <optional>,
             "sign_in_id": <optional>
         }
         """
 
-        member = self.get_object()
-
-        # ---------- user_id (MANDATORY) ----------
-        user_id = request.data.get("user_id")
-        if not user_id:
-            return self.fail("user_id is required.", status.HTTP_400_BAD_REQUEST)
-
+        # =========================
+        # USER
+        # =========================
         try:
-            user = User.objects.get(pk=int(user_id))
-        except (User.DoesNotExist, ValueError, TypeError):
+            user = User.objects.get(pk=pk)
+        except User.DoesNotExist:
             return self.fail("Invalid user_id.", status.HTTP_404_NOT_FOUND)
 
-        # ---------- sign_in_id (OPTIONAL) ----------
-        sign_in = None
+        member_id = request.data.get("member_id")
         sign_in_id = request.data.get("sign_in_id")
+
+        if not member_id and not sign_in_id:
+            return self.fail(
+                "member_id or sign_in_id is required.",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        member = None
+        sign_in = None
+
+        if member_id not in (None, "", "null"):
+            try:
+                member = Member.objects.get(pk=int(member_id))
+            except (Member.DoesNotExist, ValueError, TypeError):
+                return self.fail("Invalid member_id.", status.HTTP_404_NOT_FOUND)
 
         if sign_in_id not in (None, "", "null"):
             try:
@@ -143,55 +153,45 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
                 return self.fail("Invalid sign_in_id.", status.HTTP_404_NOT_FOUND)
 
         # =====================================================
-        # CHECK EXISTING (user_id + member_id)
+        # 1️⃣ FIND ANY LOGICAL MATCH FOR THIS USER
         # =====================================================
         assignment = MemberAssignment.objects.filter(
-            user=user,
-            member=member
+            user=user
+        ).filter(
+            Q(member=member) | Q(sign_in=sign_in)
         ).first()
 
         # =====================================================
-        # CASE 1: ROW EXISTS
+        # 2️⃣ UPDATE EXISTING ROW
         # =====================================================
         if assignment:
-            # 🚫 user_id + member_id exists AND no sign_in given → SHOW EXISTING
-            if sign_in is None:
-                return self.ok(
-                    "Already assigned.",
-                    {"assignment": MemberAssignmentSerializer(assignment).data}
-                )
+            updated = False
 
-            # sign_in NULL → UPDATE
-            if assignment.sign_in is None:
+            # fill missing member
+            if assignment.member is None and member is not None:
+                assignment.member = member
+                updated = True
+
+            # fill missing sign_in
+            if assignment.sign_in is None and sign_in is not None:
                 assignment.sign_in = sign_in
+                updated = True
+
+            if updated:
                 assignment.save()
-
                 return self.ok(
-                    "Sign-in assigned successfully.",
+                    "Assignment updated.",
                     {"assignment": MemberAssignmentSerializer(assignment).data}
                 )
 
-            # same sign_in → SHOW EXISTING
-            if assignment.sign_in == sign_in:
-                return self.ok(
-                    "Already assigned.",
-                    {"assignment": MemberAssignmentSerializer(assignment).data}
-                )
-
-            # different sign_in → CREATE NEW ROW
-            new_assignment = MemberAssignment.objects.create(
-                user=user,
-                member=member,
-                sign_in=sign_in
-            )
-
+            # nothing changed → already assigned
             return self.ok(
-                "Assigned with new sign-in successfully.",
-                {"assignment": MemberAssignmentSerializer(new_assignment).data}
+                "Already assigned.",
+                {"assignment": MemberAssignmentSerializer(assignment).data}
             )
 
         # =====================================================
-        # CASE 2: NO ROW → CREATE
+        # 3️⃣ CREATE NEW ROW (ONLY IF NOTHING EXISTS)
         # =====================================================
         assignment = MemberAssignment.objects.create(
             user=user,
@@ -203,6 +203,7 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
             "Assigned successfully.",
             {"assignment": MemberAssignmentSerializer(assignment).data}
         )
+
 
     # =================================================
     # UNASSIGN MEMBER
@@ -340,3 +341,37 @@ class UsersMembersView(APIView):
             "message": "Users with members fetched successfully.",
             "results": results
         })
+    
+
+class UserAssignMemberView(ResponseMixin, APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, user_id):
+        member_id = request.data.get("member_id")
+        sign_in_id = request.data.get("sign_in_id")
+
+        if not member_id and not sign_in_id:
+            return self.fail(
+                "Provide member_id or sign_in_id.",
+                status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return self.fail("User not found.", status.HTTP_404_NOT_FOUND)
+
+        # If member_id provided → delegate to MemberViewSet logic
+        if member_id:
+            try:
+                member = Member.objects.get(pk=member_id)
+            except Member.DoesNotExist:
+                return self.fail("Invalid member_id.", status.HTTP_404_NOT_FOUND)
+
+            viewset = MemberViewSet()
+            viewset.request = request
+            viewset.kwargs = {"pk": member.id}
+            request.data["user_id"] = user.id
+            return viewset.assign_user(request, pk=member.id)
+
+        return self.fail("Invalid request.", status.HTTP_400_BAD_REQUEST)
