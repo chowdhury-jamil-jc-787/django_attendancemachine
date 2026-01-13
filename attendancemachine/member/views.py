@@ -104,74 +104,85 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     # }
     # =================================================
     @decorators.action(
-    detail=True,
-    methods=["post"],
-    url_path="assign-user",
-    permission_classes=[IsAuthenticated]
+        detail=True,
+        methods=["post"],
+        url_path="assign-user",
+        permission_classes=[IsAuthenticated]
     )
     def assign_user(self, request, pk=None):
         """
-        pk = MEMBER ID from URL
+        pk = member_id (from URL)
 
         Body:
         {
-            "user_id": <required>,
+            "user_id": <optional>,
             "sign_in_id": <optional>
         }
 
-        RULE:
-        - Team member and Sign-in MUST be separate rows
+        RULES:
+        - user_id → ONLY from body (nullable)
+        - member_id → ONLY from URL
+        - sign_in_id → ONLY from body (nullable)
+        - NO token usage
         """
 
+        # =========================
+        # member_id from URL
+        # =========================
         member = self.get_object()
 
-        # ---------- user_id (REQUIRED) ----------
+        # =========================
+        # user_id (OPTIONAL)
+        # =========================
+        user = None
         user_id = request.data.get("user_id")
-        if not user_id:
-            return self.fail("user_id is required.", status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user = User.objects.get(pk=int(user_id))
-        except (User.DoesNotExist, ValueError, TypeError):
-            return self.fail("user_id is invalid.", status.HTTP_404_NOT_FOUND)
+        if user_id not in (None, "", "null"):
+            try:
+                user = User.objects.get(pk=int(user_id))
+            except (User.DoesNotExist, ValueError, TypeError):
+                return self.fail("Invalid user_id.", status.HTTP_404_NOT_FOUND)
 
-        # ---------- sign_in_id (OPTIONAL) ----------
+        # =========================
+        # sign_in_id (OPTIONAL)
+        # =========================
+        sign_in = None
         sign_in_id = request.data.get("sign_in_id")
 
-        # =================================================
-        # CASE 1: ASSIGN SIGN-IN (member MUST be NULL)
-        # =================================================
         if sign_in_id not in (None, "", "null"):
             try:
                 sign_in = Member.objects.get(pk=int(sign_in_id))
             except (Member.DoesNotExist, ValueError, TypeError):
-                return self.fail("sign_in_id is invalid.", status.HTTP_404_NOT_FOUND)
+                return self.fail("Invalid sign_in_id.", status.HTTP_404_NOT_FOUND)
 
-            assignment, created = MemberAssignment.objects.get_or_create(
-                user=user,
-                sign_in=sign_in,
-                member=None,   # 🔥 IMPORTANT
-            )
-
-            return self.ok(
-                "Sign-in assigned successfully." if created else "Sign-in already assigned.",
-                {"assignment": MemberAssignmentSerializer(assignment).data}
-            )
-
-        # =================================================
-        # CASE 2: ASSIGN TEAM MEMBER (sign_in MUST be NULL)
-        # =================================================
-        assignment, created = MemberAssignment.objects.get_or_create(
+        # =========================
+        # DUPLICATE CHECK
+        # =========================
+        exists = MemberAssignment.objects.filter(
             user=user,
             member=member,
-            sign_in=None,   # 🔥 IMPORTANT
+            sign_in=sign_in
+        ).first()
+
+        if exists:
+            return self.ok(
+                "Already assigned.",
+                {"assignment": MemberAssignmentSerializer(exists).data}
+            )
+
+        # =========================
+        # CREATE
+        # =========================
+        assignment = MemberAssignment.objects.create(
+            user=user,       # ✅ NULL allowed
+            member=member,
+            sign_in=sign_in  # ✅ NULL allowed
         )
 
         return self.ok(
-            "Member assigned successfully." if created else "Member already assigned.",
+            "Assigned successfully.",
             {"assignment": MemberAssignmentSerializer(assignment).data}
         )
-
     # =================================================
     # UNASSIGN MEMBER
     # POST /api/assign/members/{member_id}/unassign-user/
