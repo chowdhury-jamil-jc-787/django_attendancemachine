@@ -104,10 +104,10 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
     # }
     # =================================================
     @decorators.action(
-    detail=True,
-    methods=["post"],
-    url_path="assign-user",
-    permission_classes=[IsAuthenticated]
+        detail=True,
+        methods=["post"],
+        url_path="assign-user",
+        permission_classes=[IsAuthenticated]
     )
     def assign_user(self, request, pk=None):
         """
@@ -121,7 +121,7 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
         """
 
         # =========================
-        # member_id from URL
+        # member from URL
         # =========================
         member = self.get_object()
 
@@ -149,24 +149,50 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
             except (Member.DoesNotExist, ValueError, TypeError):
                 return self.fail("Invalid sign_in_id.", status.HTTP_404_NOT_FOUND)
 
-        # =========================
-        # DUPLICATE CHECK
-        # =========================
-        existing = MemberAssignment.objects.filter(
+        # =====================================================
+        # CHECK EXISTING (user_id + member_id)
+        # =====================================================
+        assignment = MemberAssignment.objects.filter(
             user=user,
-            member=member,
-            sign_in=sign_in
+            member=member
         ).first()
 
-        if existing:
-            return self.ok(
-                "Already assigned.",
-                {"assignment": MemberAssignmentSerializer(existing).data}
+        # =====================================================
+        # CASE 1: ROW EXISTS
+        # =====================================================
+        if assignment:
+            # sign_in NULL → UPDATE SAME ROW
+            if assignment.sign_in is None and sign_in is not None:
+                assignment.sign_in = sign_in
+                assignment.save()
+
+                return self.ok(
+                    "Sign-in assigned successfully.",
+                    {"assignment": MemberAssignmentSerializer(assignment).data}
+                )
+
+            # same sign_in → ALREADY ASSIGNED
+            if assignment.sign_in == sign_in:
+                return self.ok(
+                    "Already assigned.",
+                    {"assignment": MemberAssignmentSerializer(assignment).data}
+                )
+
+            # 🔥 DIFFERENT sign_in → CREATE NEW ROW (FIXED)
+            new_assignment = MemberAssignment.objects.create(
+                user=user,
+                member=member,
+                sign_in=sign_in
             )
 
-        # =========================
-        # CREATE
-        # =========================
+            return self.ok(
+                "Assigned with new sign-in successfully.",
+                {"assignment": MemberAssignmentSerializer(new_assignment).data}
+            )
+
+        # =====================================================
+        # CASE 2: NO ROW → CREATE
+        # =====================================================
         assignment = MemberAssignment.objects.create(
             user=user,
             member=member,
@@ -177,6 +203,7 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
             "Assigned successfully.",
             {"assignment": MemberAssignmentSerializer(assignment).data}
         )
+
     # =================================================
     # UNASSIGN MEMBER
     # POST /api/assign/members/{member_id}/unassign-user/
