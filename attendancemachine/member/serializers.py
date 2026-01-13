@@ -15,13 +15,15 @@ class MemberSerializer(serializers.ModelSerializer):
 
 
 class MemberAssignmentSerializer(serializers.ModelSerializer):
-    # user is REQUIRED
+    # ======================
+    # WRITE FIELDS (IDs)
+    # ======================
+
     user_id = serializers.PrimaryKeyRelatedField(
         source='user',
         queryset=User.objects.all()
     )
 
-    # member is OPTIONAL (nullable)
     member_id = serializers.PrimaryKeyRelatedField(
         source='member',
         queryset=Member.objects.all(),
@@ -29,7 +31,6 @@ class MemberAssignmentSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
-    # sign_in is OPTIONAL (nullable)
     sign_in_id = serializers.PrimaryKeyRelatedField(
         source='sign_in',
         queryset=Member.objects.all(),
@@ -37,12 +38,39 @@ class MemberAssignmentSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+    # ======================
+    # READ-ONLY FIELDS (NAMES)
+    # ======================
+
+    member_name = serializers.SerializerMethodField(read_only=True)
+    sign_in_name = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = MemberAssignment
         fields = [
             'id',
+
             'user_id',
+
             'member_id',
+            'member_name',
+
             'sign_in_id',
-            'created_at'
+            'sign_in_name',
+
+            'created_at',
         ]
+
+    # ======================
+    # METHODS
+    # ======================
+
+    def get_member_name(self, obj):
+        if obj.member:
+            return obj.member.name
+        return None
+
+    def get_sign_in_name(self, obj):
+        if obj.sign_in:
+            return obj.sign_in.name
+        return None
