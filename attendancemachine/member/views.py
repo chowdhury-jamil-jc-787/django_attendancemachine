@@ -313,6 +313,7 @@ class UsersMembersView(APIView):
 
                 if a.sign_in:
                     sign_team.append({
+                        "id": a.id,
                         "sign_in_id": a.sign_in.id,
                         "sign_in_name": a.sign_in.name,
                     })
