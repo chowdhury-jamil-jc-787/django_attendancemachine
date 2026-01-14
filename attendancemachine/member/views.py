@@ -298,17 +298,35 @@ class UsersMembersView(APIView):
         page = paginator.paginate_queryset(qs, request, view=self)
 
         results = []
+
         for user in page:
+            teams = []
+            sign_team = []
+
+            for a in user.member_assignments.all():
+                if a.member:
+                    teams.append({
+                        "id": a.id,
+                        "member_id": a.member.id,
+                        "member_name": a.member.name,
+                    })
+
+                if a.sign_in:
+                    sign_team.append({
+                        "sign_in_id": a.sign_in.id,
+                        "sign_in_name": a.sign_in.name,
+                    })
+
             results.append({
                 "user": {
                     "id": user.id,
                     "username": user.username,
                     "email": user.email,
                 },
-                "members": MemberAssignmentSerializer(
-                    user.member_assignments.all(),
-                    many=True
-                ).data
+                "members": {
+                    "teams": teams,
+                    "sign_team": sign_team
+                }
             })
 
         return paginator.get_paginated_response({
@@ -316,6 +334,7 @@ class UsersMembersView(APIView):
             "message": "Users with members fetched successfully.",
             "results": results
         })
+
     
 
 class UserAssignMemberView(ResponseMixin, APIView):
