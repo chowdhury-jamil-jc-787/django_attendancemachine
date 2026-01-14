@@ -153,45 +153,22 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
                 return self.fail("Invalid sign_in_id.", status.HTTP_404_NOT_FOUND)
 
         # =====================================================
-        # 1️⃣ FIND ANY LOGICAL MATCH FOR THIS USER
+        # ✅ ONLY BLOCK EXACT DUPLICATE
         # =====================================================
-        assignment = MemberAssignment.objects.filter(
-            user=user
-        ).filter(
-            Q(member=member) | Q(sign_in=sign_in)
+        duplicate = MemberAssignment.objects.filter(
+            user=user,
+            member=member,
+            sign_in=sign_in
         ).first()
 
-        # =====================================================
-        # 2️⃣ UPDATE EXISTING ROW
-        # =====================================================
-        if assignment:
-            updated = False
-
-            # fill missing member
-            if assignment.member is None and member is not None:
-                assignment.member = member
-                updated = True
-
-            # fill missing sign_in
-            if assignment.sign_in is None and sign_in is not None:
-                assignment.sign_in = sign_in
-                updated = True
-
-            if updated:
-                assignment.save()
-                return self.ok(
-                    "Assignment updated.",
-                    {"assignment": MemberAssignmentSerializer(assignment).data}
-                )
-
-            # nothing changed → already assigned
+        if duplicate:
             return self.ok(
                 "Already assigned.",
-                {"assignment": MemberAssignmentSerializer(assignment).data}
+                {"assignment": MemberAssignmentSerializer(duplicate).data}
             )
 
         # =====================================================
-        # 3️⃣ CREATE NEW ROW (ONLY IF NOTHING EXISTS)
+        # ✅ NO DUPLICATE → CREATE
         # =====================================================
         assignment = MemberAssignment.objects.create(
             user=user,
@@ -203,8 +180,6 @@ class MemberViewSet(ResponseMixin, viewsets.ModelViewSet):
             "Assigned successfully.",
             {"assignment": MemberAssignmentSerializer(assignment).data}
         )
-
-
     # =================================================
     # UNASSIGN MEMBER
     # POST /api/assign/members/{member_id}/unassign-user/
