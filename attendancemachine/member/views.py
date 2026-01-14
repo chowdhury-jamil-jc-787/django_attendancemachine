@@ -356,7 +356,7 @@ class UserAssignMemberView(ResponseMixin, APIView):
         except User.DoesNotExist:
             return self.fail("User not found.", status.HTTP_404_NOT_FOUND)
 
-        # If member_id provided → delegate to MemberViewSet logic
+        # If member_id provided → delegate to MemberViewSet logics
         if member_id:
             try:
                 member = Member.objects.get(pk=member_id)
