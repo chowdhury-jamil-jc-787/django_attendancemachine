@@ -78,7 +78,7 @@ def send_first_signin_emails():
         sydney_time = first_time.astimezone(SYDNEY_TZ)
         hongkong_time = first_time.astimezone(HONGKONG_TZ)
 
-        subject = f"({user.first_name}) Available"
+        subject = f"{user.first_name} Available"
         body = f"""
         <p><strong>{user.first_name}</strong> checked in on <strong>{today}</strong>.</p>
 
