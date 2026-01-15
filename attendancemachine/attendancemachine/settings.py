@@ -69,6 +69,13 @@ INSTALLED_APPS = [
     'mealreport',
     'bkashgateway',
     'seatplan',
+    'signin_mail',
+    "django_crontab",
+]
+
+CRONJOBS = [
+    # Run every minute
+    ('*/1 * * * *', 'signin_mail.services.send_first_signin_emails'),
 ]
 
 MIDDLEWARE = [
@@ -214,3 +221,19 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 MEMBER_MODEL = "assign.Member"
 MEMBER_ASSIGNMENT_MODEL = "assign.MemberAssignment"
+
+
+# =========================
+# SIGN-IN MAIL BACKEND
+# =========================
+
+SIGNIN_EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+SIGNIN_EMAIL_HOST = 'mail.atpldhaka.com'
+SIGNIN_EMAIL_PORT = 465
+SIGNIN_EMAIL_USE_SSL = True
+SIGNIN_EMAIL_USE_TLS = False
+SIGNIN_EMAIL_HOST_USER = 'attendance@atpldhaka.com'
+SIGNIN_EMAIL_HOST_PASSWORD = 'm!8eYFBTJI));,n}'
+
+SIGNIN_MAIL_FROM = 'attendance@atpldhaka.com'
+
