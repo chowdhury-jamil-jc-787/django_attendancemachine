@@ -55,6 +55,8 @@ urlpatterns = [
     path("seatplan/", include("seatplan.urls")),      # HTML
     path("api/seatplan/", SeatPlanView.as_view()),  # optional (see note)
 
+    path("api/notifications/", include("notifications.urls")),
+
 ]
 
 

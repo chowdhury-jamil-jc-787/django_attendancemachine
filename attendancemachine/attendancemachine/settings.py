@@ -71,11 +71,12 @@ INSTALLED_APPS = [
     'seatplan',
     'signin_mail',
     "django_crontab",
+    'notifications',
 ]
 
 CRONJOBS = [
-    # Run every minute
     ('*/1 * * * *', 'signin_mail.services.send_first_signin_emails'),
+    ('*/1 * * * *', 'notifications.services.send_attendance_punch_notifications'),
 ]
 
 MIDDLEWARE = [
@@ -236,4 +237,7 @@ SIGNIN_EMAIL_HOST_USER = 'attendance@atpldhaka.com'
 SIGNIN_EMAIL_HOST_PASSWORD = 'm!8eYFBTJI));,n}'
 
 SIGNIN_MAIL_FROM = 'attendance@atpldhaka.com'
+
+
+FIREBASE_SERVICE_ACCOUNT_FILE = BASE_DIR / "firebase" / "firebase-service-account.json"
 
