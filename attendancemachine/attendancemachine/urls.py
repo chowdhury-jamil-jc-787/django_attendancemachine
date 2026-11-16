@@ -1,23 +1,31 @@
+
 """
 URL configuration for attendancemachine project.
 
 The `urlpatterns` list routes URLs to views. For more information please see:
-    https:///docs.djangoproject.com/en/5.2/topics/http/urls/
+    https://docs.djangoproject.com/en/5.2/topics/http/urls/
 Examples:
 Function views
     1. Add an import:  from my_app import views
     2. Add a URL to urlpatterns:  path('', views.home, name='home')
 Class-based views
     1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+
 from django.contrib import admin
 from django.urls import path, include
-from myapp.views import RegisterView, LoginView, DashboardView, LogoutView, ChangePasswordView
+
+from myapp.views import (
+    RegisterView,
+    LoginView,
+    DashboardView,
+    LogoutView,
+    ChangePasswordView,
+)
+
 from seatplan.views import SeatPlanView
+
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -26,39 +34,121 @@ from rest_framework_simplejwt.views import (
 from django.conf import settings
 from django.conf.urls.static import static
 
+
 urlpatterns = [
+    # Django Admin
     path('admin/', admin.site.urls),
-    path('api/auth/register/', RegisterView.as_view(), name='auth_register'),
-    path('api/auth/login/', LoginView.as_view(), name='auth_login'),
-    path('api/auth/logout/', LogoutView.as_view(), name='auth_logout'),
-    path('api/auth/change-password/', ChangePasswordView.as_view(), name='auth_change_password'),
-    path('api/dashboard/', DashboardView.as_view(), name='dashboard'),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # Include employee app routes
-    path('api/employee/', include('employee.urls')),
+    # Authentication
+    path(
+        'api/auth/register/',
+        RegisterView.as_view(),
+        name='auth_register'
+    ),
+    path(
+        'api/auth/login/',
+        LoginView.as_view(),
+        name='auth_login'
+    ),
+    path(
+        'api/auth/logout/',
+        LogoutView.as_view(),
+        name='auth_logout'
+    ),
+    path(
+        'api/auth/change-password/',
+        ChangePasswordView.as_view(),
+        name='auth_change_password'
+    ),
 
-    # ✅ Include profiles app routes
-    path('api/profiles/', include('profiles.urls')),
+    # Dashboard
+    path(
+        'api/dashboard/',
+        DashboardView.as_view(),
+        name='dashboard'
+    ),
 
-    path('api/leave/', include('leave.urls')),
-    
-    path("api/", include("meal.urls")), # Include meal app routes
+    # JWT Authentication
+    path(
+        'api/token/',
+        TokenObtainPairView.as_view(),
+        name='token_obtain_pair'
+    ),
+    path(
+        'api/token/refresh/',
+        TokenRefreshView.as_view(),
+        name='token_refresh'
+    ),
 
-    path('api/assign/', include('member.urls')),
+    # Employee App
+    path(
+        'api/employee/',
+        include('employee.urls')
+    ),
 
-    path('api/mealreport/', include('mealreport.urls')),
+    # Profiles App
+    path(
+        'api/profiles/',
+        include('profiles.urls')
+    ),
 
-    path("api/bkash/", include("bkashgateway.urls")),
+    # Leave Management
+    path(
+        'api/leave/',
+        include('leave.urls')
+    ),
 
-    path("seatplan/", include("seatplan.urls")),      # HTML
-    path("api/seatplan/", SeatPlanView.as_view()),  # optional (see note)
+    # Meal Management
+    path(
+        'api/',
+        include('meal.urls')
+    ),
 
-    path("api/notifications/", include("notifications.urls")),
+    # Member Assignments
+    path(
+        'api/assign/',
+        include('member.urls')
+    ),
 
+    # Meal Reports
+    path(
+        'api/mealreport/',
+        include('mealreport.urls')
+    ),
+
+    # bKash Gateway
+    path(
+        'api/bkash/',
+        include('bkashgateway.urls')
+    ),
+
+    # Seat Plan
+    path(
+        'seatplan/',
+        include('seatplan.urls')
+    ),
+    path(
+        'api/seatplan/',
+        SeatPlanView.as_view()
+    ),
+
+    # Notifications
+    path(
+        'api/notifications/',
+        include('notifications.urls')
+    ),
+
+    # NEW: Attendance Monitor
+    path(
+        'api/attendance-monitor/',
+        include('attendance_monitor.urls')
+    ),
 ]
 
 
+# Serve media files in development
 if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    urlpatterns += static(
+        settings.MEDIA_URL,
+        document_root=settings.MEDIA_ROOT
+    )

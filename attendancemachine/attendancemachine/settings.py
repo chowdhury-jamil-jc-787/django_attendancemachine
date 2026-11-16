@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     'signin_mail',
     "django_crontab",
     'notifications',
+    'attendance_monitor',
 ]
 
 CRONJOBS = [
