@@ -91,6 +91,8 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# Device-session logout is enforced by this existing authentication class.
+# It checks the signed JWT session ID against the DeviceSession table.
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'myapp.authentication.CustomJWTAuthentication',
@@ -196,6 +198,9 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 
+# Existing JWT configuration is preserved.
+# The device-session ID (sid) is added when tokens are issued in myapp/views.py.
+# No additional JWT setting or .env file is required for device logout.
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=365),     # Access token lifespan: 1 year
     'REFRESH_TOKEN_LIFETIME': timedelta(days=365),    # Refresh token lifespan: 1 year

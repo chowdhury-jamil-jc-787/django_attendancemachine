@@ -1,45 +1,36 @@
-
 """
-URL configuration for attendancemachine project.
+URL configuration for the attendancemachine project.
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+Existing application routes are preserved. Device-session management
+and device-bound JWT endpoints are added below.
 """
-
-from django.contrib import admin
-from django.urls import path, include
-
-from myapp.views import (
-    RegisterView,
-    LoginView,
-    DashboardView,
-    LogoutView,
-    ChangePasswordView,
-)
-
-from seatplan.views import SeatPlanView
-
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
 
 from django.conf import settings
 from django.conf.urls.static import static
+from django.contrib import admin
+from django.urls import include, path
+
+from myapp.views import (
+    ChangePasswordView,
+    DashboardView,
+    DeviceSessionsView,
+    DeviceTokenObtainPairView,
+    DeviceTokenRefreshView,
+    LoginView,
+    LogoutAllDevicesView,
+    LogoutDeviceView,
+    LogoutOtherDevicesView,
+    LogoutView,
+    RegisterView,
+)
+from seatplan.views import SeatPlanView
 
 
 urlpatterns = [
     # Django Admin
     path('admin/', admin.site.urls),
 
-    # Authentication
+    # Authentication (existing endpoints)
     path(
         'api/auth/register/',
         RegisterView.as_view(),
@@ -61,6 +52,28 @@ urlpatterns = [
         name='auth_change_password'
     ),
 
+    # Device-session management (new endpoints)
+    path(
+        'api/auth/sessions/',
+        DeviceSessionsView.as_view(),
+        name='auth_device_sessions'
+    ),
+    path(
+        'api/auth/sessions/<uuid:session_id>/',
+        LogoutDeviceView.as_view(),
+        name='auth_logout_device'
+    ),
+    path(
+        'api/auth/logout-others/',
+        LogoutOtherDevicesView.as_view(),
+        name='auth_logout_other_devices'
+    ),
+    path(
+        'api/auth/logout-all/',
+        LogoutAllDevicesView.as_view(),
+        name='auth_logout_all_devices'
+    ),
+
     # Dashboard
     path(
         'api/dashboard/',
@@ -68,15 +81,15 @@ urlpatterns = [
         name='dashboard'
     ),
 
-    # JWT Authentication
+    # JWT authentication, now tied to revocable device sessions
     path(
         'api/token/',
-        TokenObtainPairView.as_view(),
+        DeviceTokenObtainPairView.as_view(),
         name='token_obtain_pair'
     ),
     path(
         'api/token/refresh/',
-        TokenRefreshView.as_view(),
+        DeviceTokenRefreshView.as_view(),
         name='token_refresh'
     ),
 
@@ -138,7 +151,7 @@ urlpatterns = [
         include('notifications.urls')
     ),
 
-    # NEW: Attendance Monitor
+    # Attendance Monitor
     path(
         'api/attendance-monitor/',
         include('attendance_monitor.urls')
