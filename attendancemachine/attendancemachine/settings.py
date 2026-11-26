@@ -39,6 +39,10 @@ CORS_ALLOW_CREDENTIALS = True
 SECRET_KEY = 'django-insecure-ke*1!olqhvh60&jqe=p_#c#p=l@0d26(3y=%369tpype%-ev&i'
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# Private secret for the cPanel scheduled-attendance endpoint.
+# Keep this value confidential and use the SAME value in the cPanel cron header.
+ATTENDANCE_CRON_SECRET = 'FVAz084u0NrN3slCPfEqoP_ECasz6vEgfXrt356eqBe9gweOvc52kbGjW5tSwd9Y'
+
 DEBUG = True
 
 ALLOWED_HOSTS = ['*']

@@ -1,10 +1,11 @@
 
-"""Read-only employee attendance monitoring API.
+"""Employee attendance monitoring and administrative Home Office APIs.
 
-Uses existing Django Users, Profiles, Leave records,
-and the attendance_logs database.
+Attendance reporting uses existing Django Users, Profiles, Leave records,
+and the attendance_logs database. Home Office approvals live in a separate
+Django model; original machine punches and leave records are never edited.
 
-No database migration is required.
+Requires the HomeOffice model and its migration from the preceding step.
 """
 
 from collections import defaultdict
@@ -12,7 +13,7 @@ from datetime import date as date_cls, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
-from django.db import DatabaseError, connections
+from django.db import DatabaseError, IntegrityError, connections, transaction
 from django.utils import timezone
 
 from rest_framework import status
@@ -21,6 +22,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from leave.models import Leave
+
+from .models import HomeOffice
 
 
 BD_TZ = ZoneInfo("Asia/Dhaka")
@@ -42,6 +45,7 @@ LEAVE_STATUSES = {
 ROW_STATUSES = {
     "present",
     "absent_no_leave",
+    "home_office",
     "not_confirmed",
 } | LEAVE_STATUSES
 
@@ -273,6 +277,7 @@ def _counts(rows, employee_count):
         "total_employees": employee_count,
         "present": 0,
         "absent_no_leave": 0,
+        "home_office": 0,
         "leave_applications": 0,
         "not_confirmed": 0,
         "needs_review": 0,
@@ -299,6 +304,167 @@ def _counts(rows, employee_count):
     return result
 
 
+def _is_attendance_admin(user):
+    """Keep the existing frahman/staff/superuser policy for both APIs."""
+    return bool(
+        user.is_authenticated
+        and (
+            user.is_staff
+            or user.is_superuser
+            or user.username == "frahman"
+        )
+    )
+
+
+def _serialize_home_office(record):
+    """API-safe Home Office details, including who assigned/cancelled it."""
+    employee = record.employee
+    return {
+        "id": record.id,
+        "employee_id": record.employee_id,
+        "emp_code": str(employee.profile.emp_code or "").strip(),
+        "employee_name": employee.get_full_name().strip() or employee.username,
+        "date": record.date.isoformat(),
+        "status": "home_office" if record.is_active else "cancelled",
+        "reason": record.reason,
+        "assigned_by": (
+            {
+                "id": record.assigned_by_id,
+                "username": record.assigned_by.username,
+            }
+            if record.assigned_by_id else None
+        ),
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "cancelled_at": (
+            record.cancelled_at.isoformat()
+            if record.cancelled_at else None
+        ),
+        "cancelled_by": (
+            {
+                "id": record.cancelled_by_id,
+                "username": record.cancelled_by.username,
+            }
+            if record.cancelled_by_id else None
+        ),
+        "cancellation_reason": record.cancellation_reason,
+        "is_active": record.is_active,
+    }
+
+
+def _validate_reason(value, field_name="reason"):
+    """Avoid storing huge or non-text notes."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string.")
+    value = value.strip()
+    if len(value) > 2000:
+        raise ValueError(f"{field_name} cannot exceed 2000 characters.")
+    return value
+
+
+def _find_employee_from_payload(payload):
+    """Find the same employees eligible for the existing attendance report."""
+    employee_id = payload.get("employee_id")
+    emp_code = payload.get("emp_code")
+
+    if employee_id in (None, "") and emp_code in (None, ""):
+        raise ValueError("Provide employee_id or emp_code.")
+
+    queryset = (
+        User.objects.filter(is_active=True, profile__emp_code__isnull=False)
+        .exclude(profile__emp_code="")
+        .select_related("profile")
+    )
+
+    if employee_id not in (None, ""):
+        try:
+            employee_id = int(employee_id)
+            if employee_id < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError("employee_id must be a positive integer.")
+        queryset = queryset.filter(id=employee_id)
+
+    if emp_code not in (None, ""):
+        if not isinstance(emp_code, (str, int)):
+            raise ValueError("emp_code must be a string or number.")
+        queryset = queryset.filter(profile__emp_code=str(emp_code).strip())
+
+    employee = queryset.first()
+    if employee is None:
+        return None
+    if str(employee.profile.emp_code).strip() == "00":
+        return None
+    return employee
+
+
+def _validate_home_office_eligibility(employee, day):
+    """
+    Enforce the same absent_no_leave rules used by AttendanceMonitorView:
+    a registered employee, an office-open day, no punches, and no active
+    (including pending/rejected) leave application for that date.
+
+    Raises ValueError with an explanation if the date isn't eligible.
+    """
+    day_text = day.isoformat()
+    next_day_text = (day + timedelta(days=1)).isoformat()
+    employee_code = str(employee.profile.emp_code).strip()
+
+    # Original report checks for any non-cancelled leave application.
+    leave_entries = Leave.objects.filter(user=employee).exclude(
+        status="cancelled"
+    ).only("date")
+    if any(
+        day_text in {str(value) for value in (entry.date or [])}
+        for entry in leave_entries
+    ):
+        raise ValueError(
+            "The employee already has a leave application for this date."
+        )
+
+    # Match the report's office-opening calculation: only punches from
+    # active users with registered employee codes confirm an open day.
+    known_codes = {
+        str(value).strip()
+        for value in (
+            User.objects.filter(
+                is_active=True,
+                profile__emp_code__isnull=False,
+            )
+            .exclude(profile__emp_code="")
+            .values_list("profile__emp_code", flat=True)
+        )
+    }
+
+    with connections["logs"].cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM attendance_logs
+            WHERE timestamp >= %s AND timestamp < %s
+            """,
+            [day_text, next_day_text],
+        )
+        punched_codes = {
+            str(row[0]).strip()
+            for row in cursor.fetchall()
+            if row[0] is not None
+        }
+
+    if employee_code in punched_codes:
+        raise ValueError(
+            "This employee already has a machine punch on that date."
+        )
+
+    if not (punched_codes & known_codes):
+        raise ValueError(
+            "Office attendance is not confirmed for this date; "
+            "the employee is not classified as absent_no_leave."
+        )
+
+
 class AttendanceMonitorView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -308,11 +474,7 @@ class AttendanceMonitorView(APIView):
         # --------------------------------------
         user = request.user
 
-        is_admin = (
-            user.is_staff
-            or user.is_superuser
-            or user.username == "frahman"
-        )
+        is_admin = _is_attendance_admin(user)
 
         if not is_admin:
             return Response(
@@ -600,6 +762,20 @@ class AttendanceMonitorView(APIView):
                 )
             )
 
+            # Only load active Home Office approvals for the selected
+            # employees and date range. This is one query, not one per row.
+            home_offices = list(
+                HomeOffice.objects.filter(
+                    employee_id__in=[u.id for u in employees],
+                    date__range=(start_day, end_day),
+                    cancelled_at__isnull=True,
+                ).select_related(
+                    "employee__profile",
+                    "assigned_by",
+                    "cancelled_by",
+                )
+            )
+
         except DatabaseError:
             return Response(
                 {
@@ -680,6 +856,12 @@ class AttendanceMonitorView(APIView):
                         (leave.user_id, day_text)
                     ].append(leave)
 
+        # Active approvals indexed by employee and ISO attendance date.
+        home_office_map = {
+            (record.employee_id, record.date.isoformat()): record
+            for record in home_offices
+        }
+
         # --------------------------------------
         # 9. BUILD THE SELECTED DATE RANGE
         # --------------------------------------
@@ -736,6 +918,7 @@ class AttendanceMonitorView(APIView):
                 "name": name,
                 "present": 0,
                 "absent_no_leave": 0,
+                "home_office": 0,
                 "leave_applications": 0,
                 "not_confirmed": 0,
                 "needs_review": 0,
@@ -772,6 +955,10 @@ class AttendanceMonitorView(APIView):
                     [],
                 )
 
+                assigned_home_office = home_office_map.get(
+                    (employee.id, day_text)
+                )
+
                 row = {
                     "id": employee.id,
                     "emp_code": code,
@@ -790,6 +977,7 @@ class AttendanceMonitorView(APIView):
                     "distinct_punch_times": 0,
                     "working_hours": None,
                     "needs_review": False,
+                    "home_office": None,
                     "leave": [
                         {
                             "id": leave.id,
@@ -850,14 +1038,21 @@ class AttendanceMonitorView(APIView):
                         )
                     )
 
-                # CASE C: OFFICE OPEN, NO PUNCH,
-                # AND NO LEAVE APPLICATION
+                # CASE C: APPROVED HOME OFFICE. Punch and leave data
+                # take priority if records were added after approval.
+                elif assigned_home_office is not None:
+                    row["status"] = "home_office"
+                    row["home_office"] = _serialize_home_office(
+                        assigned_home_office
+                    )
+
+                # CASE D: OFFICE OPEN, NO PUNCH, NO LEAVE OR HOME OFFICE
                 elif is_open:
                     row["status"] = (
                         "absent_no_leave"
                     )
 
-                # CASE D: OFFICE NOT CONFIRMED
+                # CASE E: OFFICE NOT CONFIRMED
                 else:
                     row["status"] = (
                         "not_confirmed"
@@ -1147,6 +1342,13 @@ class AttendanceMonitorView(APIView):
                     == "absent_no_leave"
                 ],
 
+                # New list; all existing response fields are preserved.
+                "home_office": [
+                    row
+                    for row in results
+                    if row["status"] == "home_office"
+                ],
+
                 "on_leave": [
                     row
                     for row in results
@@ -1160,6 +1362,283 @@ class AttendanceMonitorView(APIView):
                     if row["status"]
                     == "not_confirmed"
                 ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class HomeOfficeView(APIView):
+    """
+    GET /api/attendance-monitor/home-office/
+        List approvals with page/per_page, date, employee and status filters.
+
+    POST /api/attendance-monitor/home-office/
+        Assign a past/current absent_no_leave employee-day as Home Office.
+        Body: {"employee_id": 123, "date": "2026-11-25", "reason": "..."}
+        Or use "emp_code" instead of "employee_id".
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _is_attendance_admin(request.user):
+            return Response(
+                {"success": False, "error": "Administrator access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        query = request.query_params
+        try:
+            page = _positive_int(query.get("page"), 1)
+            per_page = _positive_int(query.get("per_page"), 50, MAX_PAGE_SIZE)
+            date_text = query.get("date")
+            start_text = query.get("start_date")
+            end_text = query.get("end_date")
+            if date_text and (start_text or end_text):
+                raise ValueError("Use either date OR start_date and end_date.")
+            if bool(start_text) != bool(end_text):
+                raise ValueError("Both start_date and end_date are required for a range.")
+
+            selected_date = _parse_date(date_text) if date_text else None
+            start_day = _parse_date(start_text) if start_text else None
+            end_day = _parse_date(end_text) if end_text else None
+            if start_day and start_day > end_day:
+                raise ValueError("end_date cannot be earlier than start_date.")
+
+            state = str(query.get("status", "active")).strip().lower()
+            if state not in ("active", "cancelled", "all"):
+                raise ValueError("status must be active, cancelled or all.")
+
+            employee_id = query.get("employee_id")
+            if employee_id not in (None, ""):
+                employee_id = _positive_int(employee_id, 1)
+
+            emp_code = str(query.get("emp_code", "")).strip()
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            records = HomeOffice.objects.select_related(
+                "employee__profile", "assigned_by", "cancelled_by"
+            ).all()
+            if state == "active":
+                records = records.filter(cancelled_at__isnull=True)
+            elif state == "cancelled":
+                records = records.filter(cancelled_at__isnull=False)
+            if selected_date:
+                records = records.filter(date=selected_date)
+            elif start_day:
+                records = records.filter(date__range=(start_day, end_day))
+            if employee_id:
+                records = records.filter(employee_id=employee_id)
+            if emp_code:
+                records = records.filter(employee__profile__emp_code=emp_code)
+
+            count = records.count()
+            start_index = (page - 1) * per_page
+            entries = list(records[start_index:start_index + per_page])
+        except DatabaseError:
+            return Response(
+                {"success": False, "error": "Unable to load Home Office records."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        last_page = (count + per_page - 1) // per_page
+
+        def page_url(target):
+            parameters = request.query_params.copy()
+            parameters["page"] = str(target)
+            parameters["per_page"] = str(per_page)
+            return request.build_absolute_uri("?" + parameters.urlencode())
+
+        return Response(
+            {
+                "success": True,
+                "count": count,
+                "results": [_serialize_home_office(record) for record in entries],
+                "pagination": {
+                    "total": count,
+                    "per_page": per_page,
+                    "current_page": page,
+                    "last_page": last_page,
+                    "has_more": page < last_page,
+                    "next_page_url": (
+                        page_url(page + 1) if page < last_page else None
+                    ),
+                    "prev_page_url": (
+                        page_url(page - 1) if page > 1 and last_page else None
+                    ),
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request):
+        if not _is_attendance_admin(request.user):
+            return Response(
+                {"success": False, "error": "Administrator access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            day = _parse_date(request.data.get("date"))
+            if day > timezone.localdate(timezone=BD_TZ):
+                raise ValueError("Home Office cannot be assigned for a future date.")
+            reason = _validate_reason(request.data.get("reason"))
+            employee = _find_employee_from_payload(request.data)
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DatabaseError:
+            return Response(
+                {"success": False, "error": "Unable to load employee data."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if employee is None:
+            return Response(
+                {"success": False, "error": "Employee not found or not eligible."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            _validate_home_office_eligibility(employee, day)
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except DatabaseError:
+            return Response(
+                {"success": False, "error": "Unable to verify attendance logs."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            with transaction.atomic():
+                existing = HomeOffice.objects.select_for_update().filter(
+                    employee=employee, date=day
+                ).first()
+                if existing is not None and existing.cancelled_at is None:
+                    return Response(
+                        {"success": False, "error": "Home Office is already assigned."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                if existing is not None:
+                    # Re-enable a previously cancelled assignment. A unique
+                    # employee/date constraint prevents duplicate records.
+                    existing.reason = reason
+                    existing.assigned_by = request.user
+                    existing.cancelled_at = None
+                    existing.cancelled_by = None
+                    existing.cancellation_reason = ""
+                    existing.save(update_fields=[
+                        "reason", "assigned_by", "cancelled_at",
+                        "cancelled_by", "cancellation_reason", "updated_at",
+                    ])
+                    record = existing
+                    http_status = status.HTTP_200_OK
+                else:
+                    record = HomeOffice.objects.create(
+                        employee=employee,
+                        date=day,
+                        reason=reason,
+                        assigned_by=request.user,
+                    )
+                    http_status = status.HTTP_201_CREATED
+        except IntegrityError:
+            return Response(
+                {"success": False, "error": "Home Office is already assigned."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except DatabaseError:
+            return Response(
+                {"success": False, "error": "Unable to save Home Office assignment."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # Avoid additional queries in the serialization helper.
+        record = HomeOffice.objects.select_related(
+            "employee__profile", "assigned_by", "cancelled_by"
+        ).get(pk=record.pk)
+
+        return Response(
+            {
+                "success": True,
+                "message": "Home Office assigned successfully.",
+                "home_office": _serialize_home_office(record),
+            },
+            status=http_status,
+        )
+
+
+class HomeOfficeDetailView(APIView):
+    """
+    DELETE /api/attendance-monitor/home-office/<int:pk>/
+    Cancel an approval and return the employee-day to its calculated status.
+    Optional JSON body: {"reason": "Assigned in error"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        if not _is_attendance_admin(request.user):
+            return Response(
+                {"success": False, "error": "Administrator access required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            cancellation_reason = _validate_reason(
+                request.data.get("reason"), "reason"
+            )
+        except ValueError as exc:
+            return Response(
+                {"success": False, "error": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                record = HomeOffice.objects.select_for_update().filter(
+                    pk=pk
+                ).first()
+                if record is None:
+                    return Response(
+                        {"success": False, "error": "Home Office record not found."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                if record.cancelled_at is not None:
+                    return Response(
+                        {"success": False, "error": "Home Office is already cancelled."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                record.cancelled_at = timezone.now()
+                record.cancelled_by = request.user
+                record.cancellation_reason = cancellation_reason
+                record.save(update_fields=[
+                    "cancelled_at", "cancelled_by", "cancellation_reason",
+                    "updated_at",
+                ])
+        except DatabaseError:
+            return Response(
+                {"success": False, "error": "Unable to cancel Home Office assignment."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        record = HomeOffice.objects.select_related(
+            "employee__profile", "assigned_by", "cancelled_by"
+        ).get(pk=pk)
+        return Response(
+            {
+                "success": True,
+                "message": "Home Office cancelled successfully.",
+                "home_office": _serialize_home_office(record),
             },
             status=status.HTTP_200_OK,
         )
