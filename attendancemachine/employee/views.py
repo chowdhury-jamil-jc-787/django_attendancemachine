@@ -1,4 +1,3 @@
-# employee/views.py
 from django.db import connections
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -8,6 +7,34 @@ from urllib.parse import urlencode
 from corsheaders.defaults import default_headers
 from collections import defaultdict
 from django.contrib.auth.models import User
+from django.utils import timezone
+from zoneinfo import ZoneInfo
+
+
+DHAKA_TZ = ZoneInfo('Asia/Dhaka')
+
+
+def _as_dhaka_datetime(value):
+    """Machine punch timestamps are Dhaka-local when the DB returns naive datetimes."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    if timezone.is_naive(parsed):
+        return parsed.replace(tzinfo=DHAKA_TZ)
+    return parsed.astimezone(DHAKA_TZ)
+
+
+def _format_elapsed_duration(total_seconds):
+    """Format a non-negative number of seconds as HH:MM:SS."""
+    seconds = max(0, int(total_seconds))
+    hours, remaining = divmod(seconds, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    return f'{hours:02}:{minutes:02}:{seconds:02}'
 
 
 class EmployeeInfoView(APIView):
@@ -160,7 +187,11 @@ class DailyFirstPunchesView(APIView):
                     return f"Early Leave ({minutes_short} mins)"
             return ""
 
-        # Build response
+        # Build response. Preserve total_hour (first punch -> last punch),
+        # and add a separate live elapsed timer for today's attendance.
+        # This timer does NOT verify that the employee is still in the office.
+        server_now = _as_dhaka_datetime(timezone.now())
+        today_str = server_now.date().isoformat()
         results = []
         for row in rows:
             emp_code_row, punch_date, first_punch_dt, last_punch_dt = row
@@ -168,6 +199,17 @@ class DailyFirstPunchesView(APIView):
             leave_status = check_leave_status(first_punch_dt, last_punch_dt)
             combined_status = " + ".join(filter(None, [arrival_status, leave_status]))
             first_name, last_name = user_map.get(emp_code_row, ("", ""))
+
+            first_punch_local = _as_dhaka_datetime(first_punch_dt)
+            is_today = (
+                str(punch_date) == today_str
+                and first_punch_local is not None
+                and first_punch_local.date() == server_now.date()
+            )
+            elapsed_seconds = (
+                max(0, int((server_now - first_punch_local).total_seconds()))
+                if is_today else None
+            )
 
             results.append({
                 "emp_code": emp_code_row,
@@ -177,7 +219,15 @@ class DailyFirstPunchesView(APIView):
                 "first_punch_time": format_time(first_punch_dt),
                 "last_punch_time": format_time(last_punch_dt),
                 "total_hour": calculate_duration(first_punch_dt, last_punch_dt),
-                "status": combined_status
+                "status": combined_status,
+                # Additive fields for the Android/iOS live duration display.
+                "first_punch_at": first_punch_local.isoformat() if first_punch_local else None,
+                "elapsed_duration_seconds": elapsed_seconds,
+                "elapsed_duration": (
+                    _format_elapsed_duration(elapsed_seconds)
+                    if elapsed_seconds is not None else None
+                ),
+                "duration_is_live": is_today,
             })
 
         # Pagination metadata
@@ -205,7 +255,9 @@ class DailyFirstPunchesView(APIView):
         return Response({
             "pagination": pagination,
             "results": results,
-            "total_employee": total_employee
+            "total_employee": total_employee,
+            "server_time": server_now.isoformat(),
+            "server_timezone": "Asia/Dhaka",
         })
 
 

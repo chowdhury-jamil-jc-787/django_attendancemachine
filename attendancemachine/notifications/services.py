@@ -5,12 +5,12 @@ Current settings.py cron entry stays valid:
 
 The OLD per-punch notification has been removed. This service sends:
 - Mon-Fri 07:00, 07:45, 09:00 Asia/Dhaka: missing attendance reminder.
-- Mon-Fri 12:00 noon Asia/Dhaka: missing attendance summary to frahman.
+- Mon-Fri 11:00 AM Asia/Dhaka: missing attendance summary to frahman.
 - Mon-Fri 8, 9, 10 hours after first punch: workday reminder, ONLY if
   no later distinct punch has been recorded.
 
-The next step adds AttendanceNotificationEvent to notifications/models.py
-and its migration. Do NOT start cron until that step is completed.
+The AttendanceNotificationEvent model records delivery attempts and prevents
+duplicate sends. Keep the existing every-minute scheduled invocation.
 
 Important: attendance_logs has timestamp and user_id, but no verified
 IN/OUT direction. A second punch is treated conservatively as a possible
@@ -41,7 +41,8 @@ DHAKA_TZ = ZoneInfo("Asia/Dhaka")
 # Cron is scheduled every minute. Short grace windows accommodate minor delays
 # but prevent morning reminders from being sent later in the day.
 CLOCK_WINDOW = timedelta(minutes=5)
-NOON_WINDOW = timedelta(minutes=10)
+ADMIN_MISSING_ALERT_TIME = time(11, 0)
+ADMIN_ALERT_WINDOW = timedelta(minutes=10)
 DURATION_WINDOW = timedelta(minutes=5)
 RETRY_DELAY = timedelta(minutes=2)
 STALE_CLAIM_DELAY = timedelta(minutes=5)
@@ -348,11 +349,11 @@ def _morning_reminders(now, employees, punches, exempt, tokens):
             )
 
 
-def _noon_summary(now, employees, punches, exempt, tokens, admin):
+def _admin_missing_summary(now, employees, punches, exempt, tokens, admin):
     if admin is None:
         return
-    noon = datetime.combine(now.date(), time(12, 0), tzinfo=DHAKA_TZ)
-    if not _in_window(now, noon, NOON_WINDOW):
+    scheduled = datetime.combine(now.date(), ADMIN_MISSING_ALERT_TIME, tzinfo=DHAKA_TZ)
+    if not _in_window(now, scheduled, ADMIN_ALERT_WINDOW):
         return
 
     missing = [
@@ -369,8 +370,11 @@ def _noon_summary(now, employees, punches, exempt, tokens, admin):
         preview += f"; and {len(missing) - 3} more"
 
     _deliver(
+        # Preserve the existing FCM/event identifier so mobile clients and
+        # historical event records remain compatible. Despite this legacy
+        # identifier, the alert now runs at 11:00 AM Dhaka time.
         admin, now.date(), "noon_missing_admin",
-        "Employees missing attendance - 12:00 PM",
+        "Employees missing attendance - 11:00 AM",
         f"{len(missing)} employee(s) have no attendance today: {preview}"[:250],
         tokens, now,
         {"missing_count": str(len(missing))},
@@ -441,14 +445,14 @@ def send_attendance_reminders(now=None):
         for clock, *_ in MORNING_REMINDERS
     ) or _in_window(
         now,
-        datetime.combine(now.date(), time(12, 0), tzinfo=DHAKA_TZ),
-        NOON_WINDOW,
+        datetime.combine(now.date(), ADMIN_MISSING_ALERT_TIME, tzinfo=DHAKA_TZ),
+        ADMIN_ALERT_WINDOW,
     )
 
     if is_scheduled_time:
         exempt = _exempt_from_missing_attendance(employees, now.date())
         _morning_reminders(now, employees, punches, exempt, tokens)
-        _noon_summary(now, employees, punches, exempt, tokens, admin)
+        _admin_missing_summary(now, employees, punches, exempt, tokens, admin)
 
     _working_hours_reminders(now, employees, punches, tokens)
 

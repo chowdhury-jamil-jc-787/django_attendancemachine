@@ -4,6 +4,9 @@ Run with the isolated test settings (never against the live attendance DB):
 
     python manage.py test notifications --settings=attendancemachine.test_settings
 
+The admin missing-attendance alert is scheduled at 11:00 AM Dhaka time.
+The legacy FCM event type remains "noon_missing_admin" for compatibility.
+
 Firebase sends and attendance-log reads are mocked. These tests neither send
 real push notifications nor require the attendance machine's MySQL database.
 """
@@ -186,8 +189,8 @@ class ScheduledAttendanceNotificationTests(TestCase):
         self.mock_punches.assert_not_called()
         self.mock_firebase.assert_not_called()
 
-    def test_sunday_is_skipped_even_at_noon(self):
-        self.run_at(12, day=SUNDAY)
+    def test_sunday_is_skipped_even_at_eleven(self):
+        self.run_at(11, day=SUNDAY)
         self.assertFalse(self.events().exists())
         self.mock_punches.assert_not_called()
         self.mock_firebase.assert_not_called()
@@ -274,10 +277,29 @@ class ScheduledAttendanceNotificationTests(TestCase):
         self.run_at(7)
         self.assertEqual(self.events(kind="missing_0700").count(), 1)
 
-    def test_noon_summary_goes_only_to_frahman(self):
+    def test_admin_summary_does_not_run_before_eleven_or_at_noon(self):
+        # The notification must NOT run using its old 12:00 PM time.
+        self.run_at(10, 59, 59)
+        self.run_at(12, 0)
+        self.assertFalse(self.events().exists())
+        self.mock_firebase.assert_not_called()
+
+    def test_admin_summary_runs_within_ten_minute_grace_window(self):
+        self.run_at(11, 9, 59)
+        self.assertEqual(
+            self.events(kind="noon_missing_admin", user=self.admin).count(), 1
+        )
+        self.assertEqual(self.mock_firebase.call_count, 1)
+
+    def test_admin_summary_not_sent_after_grace_window(self):
+        self.run_at(11, 10)
+        self.assertFalse(self.events().exists())
+        self.mock_firebase.assert_not_called()
+
+    def test_eleven_am_summary_goes_only_to_frahman(self):
         second_employee = self.make_user("worker_two", "102")
         self.add_device(second_employee, "second-employee-device")
-        self.run_at(12)
+        self.run_at(11)
         self.assertEqual(self.mock_firebase.call_count, 1)
         self.assertEqual(self.events(kind="noon_missing_admin", user=self.admin).count(), 1)
         self.assertEqual(self.events(user=self.employee).count(), 0)
@@ -286,7 +308,7 @@ class ScheduledAttendanceNotificationTests(TestCase):
         self.assertIn("2 employee(s)", call["body"])
         self.assertEqual(call["data"]["missing_count"], "2")
 
-    def test_noon_excludes_present_and_home_office_employees(self):
+    def test_eleven_am_excludes_present_and_home_office_employees(self):
         second_employee = self.make_user("worker_two", "102")
         third_employee = self.make_user("worker_three", "103")
         self.punch_at(8, user=second_employee)
@@ -295,20 +317,20 @@ class ScheduledAttendanceNotificationTests(TestCase):
             date=MONDAY,
             assigned_by=self.admin,
         )
-        self.run_at(12)
+        self.run_at(11)
         self.assertEqual(self.mock_firebase.call_count, 1)
         self.assertEqual(self.mock_firebase.call_args.kwargs["data"]["missing_count"], "1")
         self.assertIn("Amina", self.mock_firebase.call_args.kwargs["body"])
 
-    def test_noon_sends_nothing_when_every_employee_has_punched(self):
+    def test_eleven_am_sends_nothing_when_every_employee_has_punched(self):
         self.punch_at(8)
-        self.run_at(12)
+        self.run_at(11)
         self.assertFalse(self.events().exists())
         self.mock_firebase.assert_not_called()
 
-    def test_noon_needs_an_active_admin_device(self):
+    def test_eleven_am_needs_an_active_admin_device(self):
         UserDeviceToken.objects.filter(user=self.admin).update(is_active=False)
-        self.run_at(12)
+        self.run_at(11)
         self.assertFalse(self.events().exists())
         self.mock_firebase.assert_not_called()
 
