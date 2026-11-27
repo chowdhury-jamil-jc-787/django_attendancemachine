@@ -3,19 +3,23 @@
 Current settings.py cron entry stays valid:
     notifications.services.send_attendance_punch_notifications
 
-The OLD per-punch notification has been removed. This service sends:
+This service sends:
+- Every day, after each genuine new machine punch: an attendance notification
+  showing elapsed time since the first punch of that day.
 - Mon-Fri 07:00, 07:45, 09:00 Asia/Dhaka: missing attendance reminder.
 - Mon-Fri 11:00 AM Asia/Dhaka: missing attendance summary to frahman.
-- Mon-Fri 8, 9, 10 hours after first punch: workday reminder, ONLY if
-  no later distinct punch has been recorded.
+- Mon-Fri 8, 9, 10 hours after first punch: elapsed-time reminder,
+  even when the machine records repeated or later punches.
 
 The AttendanceNotificationEvent model records delivery attempts and prevents
 duplicate sends. Keep the existing every-minute scheduled invocation.
 
 Important: attendance_logs has timestamp and user_id, but no verified
-IN/OUT direction. A second punch is treated conservatively as a possible
-checkout: this avoids sending 'leave the office' to someone already gone,
-but cannot reliably identify who is physically still at work.
+IN/OUT direction. Punch messages state elapsed time since the first punch,
+NOT verified working duration or physical time spent inside the office.
+Nearby duplicate machine rows are grouped into one genuine punch event.
+A short settling period permits repeat rows to arrive before notification.
+Old punches are never automatically replayed when the service is deployed.
 """
 
 import logging
@@ -46,6 +50,16 @@ ADMIN_ALERT_WINDOW = timedelta(minutes=10)
 DURATION_WINDOW = timedelta(minutes=5)
 RETRY_DELAY = timedelta(minutes=2)
 STALE_CLAIM_DELAY = timedelta(minutes=5)
+
+# Punch notifications: cron runs every minute. Keep a limited lookback to
+# avoid replaying historical punches after a deployment or a long cron outage.
+# Your machine commonly writes several timestamps seconds apart for one scan.
+PUNCH_EVENT_TYPE = "attendance_punch"
+PUNCH_DUPLICATE_GAP = timedelta(seconds=120)
+PUNCH_SETTLE_DELAY = timedelta(seconds=75)
+PUNCH_RECENT_WINDOW = timedelta(minutes=7)
+PUNCH_HISTORY_WINDOW = timedelta(minutes=15)
+
 
 MORNING_REMINDERS = (
     (
@@ -266,13 +280,13 @@ def _claim(user, day, kind, key, now):
         return event.pk
 
 
-def _deliver(user, day, kind, title, body, tokens, now, data=None):
+def _deliver(user, day, kind, title, body, tokens, now, data=None, event_key=None):
     """Deliver one event to every active FCM device token for a user."""
     user_tokens = tokens.get(user.pk, [])
     if not user_tokens:
         return False
 
-    key = f"{day.isoformat()}:{user.pk}:{kind}"
+    key = event_key or f"{day.isoformat()}:{user.pk}:{kind}"
     event_id = _claim(user, day, kind, key, now)
     if event_id is None:
         return False
@@ -302,14 +316,9 @@ def _deliver(user, day, kind, title, body, tokens, now, data=None):
             for token, response in zip(batch, result.get("responses") or []):
                 if response.success:
                     continue
-                detail = str(response.exception)
+                detail = str(response.exception) if response.exception else "Unknown FCM failure"
                 errors.append(detail)
-                lowered = detail.lower()
-                if any(term in lowered for term in (
-                    "registration-token-not-registered",
-                    "invalid-registration-token",
-                    "unregistered",
-                )):
+                if _is_invalid_fcm_token_error(response.exception):
                     invalid.append(token)
 
         if invalid:
@@ -330,6 +339,25 @@ def _deliver(user, day, kind, title, body, tokens, now, data=None):
         )
         logger.exception("Failed to send %s event to user %s", kind, user.pk)
         return False
+
+
+def _is_invalid_fcm_token_error(exception):
+    """Recognize token-revocation errors without disabling tokens for outages.
+
+    Firebase Admin SDK versions may expose an exception class such as
+    UnregisteredError, or format its message as 'NotRegistered'.
+    """
+    if exception is None:
+        return False
+
+    detail = f"{type(exception).__name__} {exception}".casefold()
+    return any(marker in detail for marker in (
+        "notregistered",                  # Observed Firebase response
+        "unregistered",                   # Firebase Admin SDK exception
+        "registration-token-not-registered",
+        "invalid-registration-token",
+        "invalid registration token",
+    ))
 
 
 def _morning_reminders(now, employees, punches, exempt, tokens):
@@ -382,20 +410,21 @@ def _admin_missing_summary(now, employees, punches, exempt, tokens, admin):
 
 
 def _working_hours_reminders(now, employees, punches, tokens):
-    """Reminder at elapsed 8/9/10 hours if there is no subsequent punch.
+    """Send 8/9/10-hour elapsed-time reminders after the first punch.
 
-    With no IN/OUT field, we cannot prove someone is still in the office.
-    If 2+ distinct punches exist, we conservatively suppress the reminder
-    because one could be a checkout record.
+    Ignore the number of subsequent/distinct machine punches: duplicate or
+    extra records must not silently suppress reminders. Machine logs lack a
+    reliable IN/OUT flag, so the message must not imply that the employee is
+    still in the office or has worked the entire elapsed period.
     """
     for employee in employees:
         code = _employee_code(employee)
         first_and_count = punches.get(code)
         if not first_and_count:
             continue
-        first, distinct_punch_count = first_and_count
-        if distinct_punch_count != 1:
-            continue
+
+        # Preserve the existing punch-loader return shape for compatibility.
+        first, _distinct_punch_count = first_and_count
 
         for hours, kind in WORKDAY_REMINDERS:
             deadline = first + timedelta(hours=hours)
@@ -404,12 +433,12 @@ def _working_hours_reminders(now, employees, punches, tokens):
 
             _deliver(
                 employee, now.date(), kind,
-                f"Workday reminder - {hours} hours",
+                f"Attendance reminder - {hours} hours elapsed",
                 (
                     f"{_name(employee)}, {hours} hours have passed since your "
-                    f"first attendance at {first.strftime('%I:%M %p')}. "
-                    "If you are still at the office, please finish your work "
-                    "and check out when appropriate."
+                    f"first attendance punch at {first.strftime('%I:%M %p')}. "
+                    "If you are still working, please remember to check out "
+                    "when your workday finishes."
                 ),
                 tokens, now,
                 {
@@ -420,37 +449,241 @@ def _working_hours_reminders(now, employees, punches, tokens):
             )
 
 
+def _load_punch_notification_users():
+    """Active users with valid machine IDs; includes staff who punch in.
+
+    Morning/workday scheduled reminders continue to use the original
+    _eligible_employee restrictions, excluding administrators.
+    """
+    return list(
+        User.objects.filter(is_active=True, profile__emp_code__isnull=False)
+        .exclude(profile__emp_code="")
+        .select_related("profile")
+    )
+
+
+def _punch_user_by_code(users):
+    """Do not expose an employee's attendance to a duplicate emp_code account."""
+    lookup = {}
+    ambiguous = set()
+    for user in users:
+        code = _employee_code(user)
+        if code in ("", "00"):
+            continue
+        if code in lookup:
+            ambiguous.add(code)
+        else:
+            lookup[code] = user
+
+    for code in ambiguous:
+        lookup.pop(code, None)
+        logger.warning("Punch push skipped: duplicate employee code %s", code)
+    return lookup
+
+
+def _load_recent_punches(day, now):
+    """Distinct machine timestamps from a short, indexed Dhaka-local range.
+
+    Query uses the machine's naive local-time convention like
+    _load_first_punches(). A short lookback prevents historical backfills.
+    """
+    today_start = datetime.combine(day, time.min)
+    next_start = today_start + timedelta(days=1)
+    clock = now.astimezone(DHAKA_TZ).replace(tzinfo=None)
+    beginning = max(today_start, clock - PUNCH_HISTORY_WINDOW)
+    ending = min(next_start, clock + timedelta(microseconds=1))
+    if beginning >= ending:
+        return {}
+
+    punches = defaultdict(list)
+    with connections["logs"].cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT user_id, timestamp
+            FROM attendance_logs
+            WHERE timestamp >= %s AND timestamp < %s
+            ORDER BY user_id, timestamp
+            """,
+            [beginning, ending],
+        )
+        for raw_code, raw_time in cursor.fetchall():
+            if raw_code is None:
+                continue
+            code = str(raw_code).strip()
+            when = _dhaka_datetime(raw_time)
+            if code and when is not None and when.date() == day:
+                punches[code].append(when)
+    return punches
+
+
+def _group_punches(times):
+    """Return (first, last) for each machine-scan cluster.
+
+    Even exact duplicate timestamps and scans separated by seconds are treated
+    as one event; independent scans spaced over 120 seconds are distinct.
+    """
+    unique = sorted(set(times))
+    if not unique:
+        return []
+    groups = []
+    start = end = unique[0]
+    for instant in unique[1:]:
+        if instant - end <= PUNCH_DUPLICATE_GAP:
+            end = instant
+        else:
+            groups.append((start, end))
+            start = end = instant
+    groups.append((start, end))
+    return groups
+
+
+def _stable_punch_key(user, day, first):
+    """Reuse a nearby event key if machine rows arrived out of order.
+
+    Normally the key is based on the first timestamp in the punch cluster.
+    A late-arriving record a few seconds earlier must not generate a second
+    event, even if an earlier cron invocation already sent that cluster.
+    """
+    prefix = f"{day.isoformat()}:{user.pk}:{PUNCH_EVENT_TYPE}:"
+    proposed = prefix + first.strftime("%H%M%S")
+    previous_keys = AttendanceNotificationEvent.objects.filter(
+        user_id=user.pk,
+        attendance_date=day,
+        event_type=PUNCH_EVENT_TYPE,
+        event_key__startswith=prefix,
+    ).values_list("event_key", flat=True)
+
+    nearest_key = None
+    nearest_gap = PUNCH_DUPLICATE_GAP
+    for existing in previous_keys:
+        clock = existing[len(prefix):] if existing.startswith(prefix) else ""
+        if len(clock) != 6 or not clock.isdecimal():
+            continue
+        try:
+            previous = datetime.combine(
+                day, time(int(clock[:2]), int(clock[2:4]), int(clock[4:])),
+                tzinfo=DHAKA_TZ,
+            )
+        except ValueError:
+            continue
+        gap = abs(first - previous)
+        if gap <= nearest_gap:
+            nearest_key, nearest_gap = existing, gap
+    return nearest_key or proposed
+
+
+def _elapsed_text(start, instant):
+    """Elapsed since first punch; never claim verified time at the office."""
+    total_minutes = max(0, int((instant - start).total_seconds() // 60))
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def _punch_notifications(now, recipients, tokens, day, first_punches):
+    """Send newly settled punch clusters only, never old DB history."""
+    if not recipients:
+        return
+    recent = _load_recent_punches(day, now)
+    if not recent:
+        return
+
+    for code, instants in recent.items():
+        user = recipients.get(code)
+        day_summary = first_punches.get(code)
+        if user is None or not day_summary:
+            continue
+        if not tokens.get(user.pk):
+            continue
+        day_first = day_summary[0]
+        for punch_start, punch_last in _group_punches(instants):
+            age = now - punch_last
+            if age < PUNCH_SETTLE_DELAY or age > PUNCH_RECENT_WINDOW:
+                continue
+
+            elapsed = _elapsed_text(day_first, punch_start)
+            clock = punch_start.strftime("%I:%M %p")
+            first_clock = day_first.strftime("%I:%M %p")
+            title = "ATPL - Attendance recorded"
+            if punch_start == day_first:
+                message = (
+                    f"{_name(user)}, your first attendance punch was recorded "
+                    f"at {clock}. Elapsed since first punch: 0m."
+                )
+            else:
+                message = (
+                    f"{_name(user)}, attendance recorded at {clock}. "
+                    f"Elapsed since your first punch ({first_clock}): {elapsed}."
+                )
+            event_key = _stable_punch_key(user, day, punch_start)
+            _deliver(
+                user, day, PUNCH_EVENT_TYPE, title, message, tokens, now,
+                {
+                    "emp_code": code,
+                    "punch_time": punch_start.isoformat(),
+                    "first_punch": day_first.isoformat(),
+                    "elapsed_minutes": str(
+                        max(0, int((punch_start - day_first).total_seconds() // 60))
+                    ),
+                    "elapsed_duration": elapsed,
+                },
+                event_key=event_key,
+            )
+
+
 def send_attendance_reminders(now=None):
-    """Run once each minute (safe to re-run; events are deduplicated)."""
+    """Run once every minute. Punch alerts run every day; scheduled Mon-Fri."""
     now = _as_dhaka_now(now)
-
-    # All new attendance notifications are limited to Monday-Friday.
-    if now.weekday() >= 5:
-        return
-
+    day = now.date()
     employees, admin = _load_staff_and_admin()
-    if not employees:
+
+    # Punch notifications are allowed for employees and other active users
+    # with an actual machine code. Keep morning/hour reminder permissions as-is.
+    punch_users = _load_punch_notification_users()
+    recipients = _punch_user_by_code(punch_users)
+    by_id = {u.pk: u for u in employees + punch_users}
+    if admin is not None:
+        by_id[admin.pk] = admin
+    tokens = _token_map(list(by_id.values()))
+
+    punches = _load_first_punches(day)
+    try:
+        _punch_notifications(now, recipients, tokens, day, punches)
+    except Exception:
+        # One machine-sync or punch-push error must not disable morning, admin,
+        # or workday scheduled reminders in the same cron invocation.
+        logger.exception("Attendance punch notification processing failed")
+
+    # A punch just before midnight must still be processed when cron resumes
+    # shortly after midnight, with the original attendance date/event key.
+    day_start = datetime.combine(day, time.min, tzinfo=DHAKA_TZ)
+    if now - day_start < PUNCH_RECENT_WINDOW + PUNCH_SETTLE_DELAY:
+        prior_day = day - timedelta(days=1)
+        try:
+            previous_punches = _load_first_punches(prior_day)
+            _punch_notifications(now, recipients, tokens, prior_day, previous_punches)
+        except Exception:
+            logger.exception("Previous-day attendance punch processing failed")
+
+    # Existing morning, administrator, and workday reminders remain weekday-only.
+    if now.weekday() >= 5 or not employees:
         return
 
-    punches = _load_first_punches(now.date())
-    tokens = _token_map(employees + ([admin] if admin else []))
-
-    # The leave/Home Office query is needed only around scheduled reminders.
+    # Leave and Home Office lookups are needed only at scheduled clock times.
     is_scheduled_time = any(
         _in_window(
             now,
-            datetime.combine(now.date(), clock, tzinfo=DHAKA_TZ),
+            datetime.combine(day, clock, tzinfo=DHAKA_TZ),
             CLOCK_WINDOW,
         )
         for clock, *_ in MORNING_REMINDERS
     ) or _in_window(
         now,
-        datetime.combine(now.date(), ADMIN_MISSING_ALERT_TIME, tzinfo=DHAKA_TZ),
+        datetime.combine(day, ADMIN_MISSING_ALERT_TIME, tzinfo=DHAKA_TZ),
         ADMIN_ALERT_WINDOW,
     )
 
     if is_scheduled_time:
-        exempt = _exempt_from_missing_attendance(employees, now.date())
+        exempt = _exempt_from_missing_attendance(employees, day)
         _morning_reminders(now, employees, punches, exempt, tokens)
         _admin_missing_summary(now, employees, punches, exempt, tokens, admin)
 
@@ -458,8 +691,5 @@ def send_attendance_reminders(now=None):
 
 
 def send_attendance_punch_notifications():
-    """Compatibility wrapper for existing settings.py CRONJOBS entry.
-
-    It no longer sends the old notification for every machine punch.
-    """
+    """Retain the exact callable path used by settings.py CRONJOBS."""
     return send_attendance_reminders()
