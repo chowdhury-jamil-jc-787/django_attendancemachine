@@ -146,6 +146,19 @@ def _load_staff_and_admin():
     return employees, admin
 
 
+def _machine_sql_timestamp(value):
+    """Bind a Dhaka-local wall-clock timestamp without driver TZ adaptation.
+
+    Machine logs store local DATETIME values. MySQL Connector versions that
+    reference the removed django.utils.timezone.utc cannot bind datetime
+    objects with USE_TZ enabled. Parameterized strings avoid that path and
+    preserve the machine clock; no UTC conversion is wanted for these bounds.
+    """
+    if value.tzinfo is not None:
+        value = value.astimezone(DHAKA_TZ).replace(tzinfo=None)
+    return value.isoformat(sep=" ", timespec="microseconds")
+
+
 def _load_first_punches(day):
     """Read earliest punch and count distinct timestamps per employee.
 
@@ -164,7 +177,7 @@ def _load_first_punches(day):
             WHERE timestamp >= %s AND timestamp < %s
             GROUP BY user_id
             """,
-            [day_start, next_start],
+            [_machine_sql_timestamp(day_start), _machine_sql_timestamp(next_start)],
         )
         for raw_code, raw_first, count in cursor.fetchall():
             if raw_code is None:
@@ -504,7 +517,7 @@ def _load_recent_punches(day, now):
             WHERE timestamp >= %s AND timestamp < %s
             ORDER BY user_id, timestamp
             """,
-            [beginning, ending],
+            [_machine_sql_timestamp(beginning), _machine_sql_timestamp(ending)],
         )
         for raw_code, raw_time in cursor.fetchall():
             if raw_code is None:
