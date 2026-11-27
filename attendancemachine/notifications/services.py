@@ -559,11 +559,13 @@ def _stable_punch_key(user, day, first):
     """
     prefix = f"{day.isoformat()}:{user.pk}:{PUNCH_EVENT_TYPE}:"
     proposed = prefix + first.strftime("%H%M%S")
+    # Production MySQL rejects Django's case-sensitive startswith SQL
+    # (error 1287: BINARY expr is deprecated). Scope the query by user,
+    # date and event type, then check the exact prefix in Python below.
     previous_keys = AttendanceNotificationEvent.objects.filter(
         user_id=user.pk,
         attendance_date=day,
         event_type=PUNCH_EVENT_TYPE,
-        event_key__startswith=prefix,
     ).values_list("event_key", flat=True)
 
     nearest_key = None
